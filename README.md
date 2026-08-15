@@ -24,6 +24,9 @@
   状态点并直接加载现有实例，不会重复启动
 - **全屏**：托盘菜单「全屏 / 退出全屏」一键切换（文案随当前状态自动变化）；全屏时顶栏自动隐藏，
   鼠标移到屏幕顶部边缘即滑出
+- **全屏快捷键**：`F11` 切换全屏、`Esc` 退出全屏；快捷键在应用控制台页与 Harness 界面均可用
+  （解决主屏全屏时任务栏/托盘被盖住、无法退出的问题）；Esc 优先让给 Harness 自身使用，
+  仅当页面未拦截且焦点不在输入控件内时退出全屏
 - **整窗进入 Harness**：服务就绪后自动整窗导航到 `http://127.0.0.1:3081`（跨站 iframe 不可行，
   改为顶层导航）
 - **系统托盘**：关闭主窗口 → 最小化到托盘；托盘菜单：返回控制台 / 全屏 / 退出应用
@@ -51,7 +54,7 @@ xzy-dsh-desktop/
 └── src-tauri/
     ├── Cargo.toml              # tauri 2 / single-instance / window-vibrancy
     ├── build.rs                # 构建脚本（icons 变更自动触发资源重嵌入）
-    ├── tauri.conf.json         # 窗口、托盘、NSIS 打包配置
+    ├── tauri.conf.json         # NSIS 打包、安全与全局配置（主窗口在 main.rs 中创建）
     ├── capabilities/default.json
     └── src/main.rs             # 全部 Rust 后端逻辑
 ```
@@ -107,6 +110,8 @@ npm run build:portable
   现有实例，不会重复启动
 - 托盘菜单「全屏 / 退出全屏」：一键进入/退出全屏；全屏时顶栏自动隐藏，鼠标移到屏幕
   顶部边缘即滑出
+- 快捷键：`F11` 切换全屏、`Esc` 退出全屏（Esc 在输入框内不生效，优先让 Harness 使用）
+  —— 主屏全屏时任务栏/托盘不可达，用 `F11`/`Esc` 即可进出
 
 ## 内存说明
 
@@ -160,3 +165,79 @@ dsh 服务本身是独立 Node 进程，另计约 60–100 MB（不含在壳内�
   再次启动前应用会检测端口占用并直接复用（或手动 `taskkill /IM node.exe /T /F`）
 - 中文/空格路径安全：所有命令均以参数数组方式传给 `std::process::Command`，
   不经字符串拼接进 shell，Windows 原生 CreateProcess 引用规则自动处理
+
+## 开发踩坑记录（Tauri 2 备忘）
+
+> 一次「F11/Esc 全屏快捷键在 Harness 页失效」问题的完整排查沉淀。教训很多，写下来避免重蹈覆辙。
+
+### 1. Tauri 2 权限系统（ACL / capabilities）
+
+1. **远程页调用任何命令都必须显式配置 capability**。应用整窗导航到 Harness
+   （`http://127.0.0.1:3081`）后属于**远程 origin**，所有 IPC（包括核心窗口命令
+   `plugin:window|*`）都会被 ACL 拦截。capability 必须同时具备两个约束，**缺一不可**：
+   - `remote.urls`：origin 约束（URLPattern glob，如 `http://127.0.0.1:3081/*`）
+   - `windows` / `webviews`：目标窗口约束（如 `["main"]`）
+
+   只写 `remote` 不写 `windows` 时，命令虽解析到了远程 origin 却匹配不到任何窗口 →
+   被拒。release 构建的错误信息只有笼统的 `Command ... not allowed by ACL`（详细原因
+   仅在 debug 构建可见），排查时极易误判为「脚本没运行」。
+
+2. **capability 的 `remote` 字段是单个对象**（`"remote": { "urls": [...] }`），不是数组
+   `[{...}]`——写错会直接构建失败（`expected a sequence`）。
+
+3. **`"default"` 不是可用的 app 命令权限标识符**。`permissions: ["default"]` 会报
+   `Permission default not found`（除非在 `src-tauri/permissions/` 自行定义权限文件）。
+   更简单的做法：**让前端脚本走核心命令**（如 `core:window:allow-set-fullscreen`），
+   不要为了快捷键造自定义命令。
+
+4. **核心窗口命令在本地页同样走 ACL**。`default.json` 若只有 `allow-is-fullscreen`
+   没有 `allow-set-fullscreen`，本地页的 `setFullscreen()` 也会被静默拒绝（Promise
+   reject 被 `.catch` 吞掉，表现为「按了没反应」）。
+
+### 2. WebView2 / Tauri 行为
+
+5. **WebView2 没有浏览器自带的 F11/Esc 全屏行为**。它是嵌入式控件，没有浏览器 UI；
+   F11 只是普通 keydown 事件，必须自己注入脚本 + `getCurrentWindow().setFullscreen()`
+   模拟。在 Edge 里 F11 有效，是因为那是浏览器自身的窗口行为，与页面无关。
+
+6. **`window.__TAURI__` 在远程页同样存在**。withGlobalTauri 的初始化脚本在每次文档
+   创建时注入（含整窗导航后的远程页）；`initialization_script` 挂的脚本同理。不要
+   误以为远程页没有 Tauri API 就放弃这条路。
+
+7. **`on_page_load` / `initialization_script` 是 builder 方法**（`mut self -> Self`），
+   已构建的 `WebviewWindow` 没有运行时注册入口。需要挂脚本 → 必须用
+   `WebviewWindowBuilder` 创建窗口（窗口配置相应地从 `tauri.conf.json` 移到 Rust）。
+
+### 3. 调试与自动化测试方法论
+
+8. **不要用「页面 emit 事件」诊断远程页**。emit 本身也受 ACL 限制，在远程页会静默
+   失败——看起来像「脚本没运行」，实际是 emit 被拒，会严重误导排查方向。正确姿势：
+   **Rust 侧主动探测**——`eval_with_callback` 轮询页面状态（`location.href` /
+   `!!window.__TAURI__` / 脚本安装标记 / 捕获 keydown 到全局变量），辅以 `win.url()`
+   记录导航，完全不依赖页面任何通道。
+
+9. **自动化测试发按键前必须先点击窗口**。`AppActivate` 只把窗口带到前台，
+   **webview 内部没有键盘焦点**时 keydown 到不了页面。先用 `SetCursorPos` +
+   `mouse_event` 点击窗口中心再 `SendKeys`。（详见 `scripts/smoke-test-shortcuts.ps1`）
+
+10. **`MainWindowHandle` 读取前必须 `$p.Refresh()`**，且启动初期可能拿到 14×14 的
+    占位窗口句柄；等窗口尺寸稳定后再操作。
+
+11. **构建失败 `拒绝访问 (os error 5)` = exe 被运行中的实例占用**。先
+    `Get-Process dsh-desktop | Stop-Process -Force` 再重新构建。
+
+12. **端口 3081 有残留服务时应用不会自动导航**（`runningAtLoad` 逻辑：启动时端口已
+    占用则不自动进 Harness）。自动化测试前务必清掉 3081 的监听进程，否则一直停在
+    控制台页。
+
+13. **Rust 侧 `app.listen` 需要 `use tauri::Listener`**；`event.payload()` 直接返回
+    `&str`（不是 `Option`）。
+
+### 4. 其他
+
+14. **`Cargo.toml` 行尾符会被构建工具改动**（LF/CRLF）。内容零差异但 git 显示已修改；
+    提交前 `git checkout -- src-tauri/Cargo.toml` 还原，避免把行尾噪音混进提交。
+
+15. **`dsh web`（端口 3081）是独立 node 进程**，异常强杀应用不会自动清理它。
+    清理方法：`Get-NetTCPConnection -LocalPort 3081` 找到 `OwningProcess` 后
+    `taskkill /PID <pid> /T /F`。

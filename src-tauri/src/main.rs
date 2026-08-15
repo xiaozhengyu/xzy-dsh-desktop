@@ -272,6 +272,48 @@ fn sync_fs_menu_label(app: &tauri::AppHandle) {
     let _ = item.set_text(if is_fs { "退出全屏" } else { "全屏" });
 }
 
+/// 切换主窗口全屏状态，并同步托盘菜单文案（托盘菜单与快捷键共用）。
+fn toggle_fullscreen_app(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let is_fs = win.is_fullscreen().unwrap_or(false);
+        let _ = win.set_fullscreen(!is_fs);
+        sync_fs_menu_label(app);
+    }
+}
+
+// 全屏快捷键（F11 切换 / Esc 退出）：通过 initialization_script 注入，
+// 每次页面加载都会执行（含整窗导航后的 Harness 远程页），解决主屏全屏时托盘不可达的问题。
+// Esc 仅在事件未被页面自身处理（未 preventDefault / 未 stopPropagation）
+// 且焦点不在输入控件内时生效，优先让 Harness 界面使用 Esc。
+// 走核心窗口命令（getCurrentWindow().setFullscreen）；远程页（Harness）通过
+// capabilities/harness-remote.json 获得 core:window:allow-*-fullscreen 权限。
+// WebView2 无浏览器自带 F11/Esc 全屏行为，必须由脚本自行处理。
+const SHORTCUT_SCRIPT: &str = r#"(() => {
+  if (window.__dshShortcutsInstalled) return;
+  window.__dshShortcutsInstalled = true;
+  const getWindow = () => {
+    const T = window.__TAURI__;
+    return T && T.window && T.window.getCurrentWindow ? T.window.getCurrentWindow() : null;
+  };
+  const isEditable = (el) => {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
+  };
+  window.addEventListener('keydown', (e) => {
+    const win = getWindow();
+    if (!win) return;
+    if (e.key === 'F11') {
+      e.preventDefault();
+      win.isFullscreen().then((fs) => win.setFullscreen(!fs)).catch(() => {});
+      return;
+    }
+    if (e.key === 'Escape' && !e.defaultPrevented && !isEditable(e.target)) {
+      win.isFullscreen().then((fs) => { if (fs) win.setFullscreen(false); }).catch(() => {});
+    }
+  });
+})();"#;
+
 #[cfg(target_os = "windows")]
 fn apply_window_effects(window: &tauri::WebviewWindow) {
     match window_vibrancy::apply_mica(window, Some(true)) {
@@ -305,14 +347,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     let _ = win.navigate(tauri::Url::parse("http://tauri.localhost/").expect("应用页 URL 解析失败"));
                 }
             }
-            "fullscreen" => {
-                // 全屏开关：切换主窗口全屏状态，并同步菜单文案
-                if let Some(win) = app.get_webview_window("main") {
-                    let is_fs = win.is_fullscreen().unwrap_or(false);
-                    let _ = win.set_fullscreen(!is_fs);
-                    sync_fs_menu_label(app);
-                }
-            }
+            "fullscreen" => toggle_fullscreen_app(app),
             "quit" => {
                 app.state::<AppState>().exiting.store(true, Ordering::SeqCst);
                 app.exit(0);
@@ -542,17 +577,36 @@ fn main() {
         .setup(move |app| {
             app.manage(setup_cfg.clone());
 
+            // 主窗口在 Rust 侧创建：需要挂载 initialization_script，
+            // 向每次页面加载（含整窗导航后的 Harness 页）注入全屏快捷键（F11/Esc）。
+            let win = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("DSH 桌面端")
+            .inner_size(1280.0, 840.0)
+            .min_inner_size(940.0, 620.0)
+            .center()
+            .resizable(true)
+            .decorations(true)
+            .visible(true)
+            .additional_browser_args("--proxy-bypass-list=<-loopback>")
+            .devtools(true)
+            .initialization_script(SHORTCUT_SCRIPT)
+            .build()?;
+
+            #[cfg(target_os = "windows")]
+            apply_window_effects(&win);
+
+            // 按配置决定是否自动打开 DevTools（调试用）
+            #[cfg(any(debug_assertions, feature = "devtools"))]
+            if setup_cfg.devtools.auto_open {
+                let _ = win.open_devtools();
+            }
+
             build_tray(app.handle())?;
             sync_fs_menu_label(app.handle());
-            #[cfg(target_os = "windows")]
-            if let Some(win) = app.get_webview_window("main") {
-                apply_window_effects(&win);
-                // 按配置决定是否自动打开 DevTools（调试用）
-                #[cfg(any(debug_assertions, feature = "devtools"))]
-                if setup_cfg.devtools.auto_open {
-                    let _ = win.open_devtools();
-                }
-            }
 
             // 自动启动服务（配置 service.autoStart，默认开）
             if setup_cfg.service.auto_start {

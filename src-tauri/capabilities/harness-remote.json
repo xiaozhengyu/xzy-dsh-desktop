@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "harness-remote",
+  "description": "Harness 远程页（127.0.0.1:3081）最小权限：允许查询/设置窗口全屏，供 F11/Esc 快捷键使用",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:3081", "http://127.0.0.1:3081/*"]
+  },
+  "permissions": [
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-fullscreen"
+  ]
+}
