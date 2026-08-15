@@ -3,8 +3,8 @@
 // 设计要点：
 //  - 不内嵌任何 Node.js 运行时：启动时直接调用系统 PATH 中的全局 node 与 dsh。
 //  - 通过解析 npm 生成的 dsh.cmd shim 得到真实 JS 入口，用 Command::new(node) 直接执行，
-//    从而满足“Rust 后端通过 node 执行 dsh web --port 3080”的要求；解析失败时回退到
-//    `cmd /C dsh web --port 3080`。
+//    从而满足“Rust 后端通过 node 执行 dsh web --port 3081”的要求；解析失败时回退到
+//    `cmd /C dsh web --port 3081`。
 //  - 进程树清理使用 Windows 原生 taskkill /T /F（比 sysinfo 更轻、更可靠）。
 //  - 关闭主窗口 → 最小化到托盘；托盘“退出应用” → 先杀掉派生进程再退出。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -16,26 +16,135 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Mutex, OnceLock,
     },
     time::{Duration, Instant},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, RunEvent, State, WindowEvent,
 };
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
-const WEB_PORT: u16 = 3080;
-const WEB_URL: &str = "http://127.0.0.1:3080";
-const START_TIMEOUT: Duration = Duration::from_secs(25);
+// ---------------------------------------------------------------- 配置（config.json）
+
+/// 配置结构体：首次运行在应用配置目录生成 config.json，修改后重启生效。
+/// 位置：%APPDATA%\com.deepseek.harness-desktop\config.json
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
+struct WebConfig {
+    host: String,
+    port: u16,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self { host: "127.0.0.1".into(), port: 3081 }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
+struct ServiceConfig {
+    start_timeout_secs: u64,
+    auto_start: bool,
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self { start_timeout_secs: 25, auto_start: true }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
+struct DevtoolsConfig {
+    auto_open: bool,
+}
+
+impl Default for DevtoolsConfig {
+    fn default() -> Self {
+        Self { auto_open: false }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
+struct AppConfig {
+    note: String,
+    web: WebConfig,
+    service: ServiceConfig,
+    devtools: DevtoolsConfig,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            note: "DeepSeek Harness 桌面端配置文件。修改后重启应用生效。web.port 为 dsh web 服务端口（默认 3081，避开 Harness 默认 3080 可与现有会话并存）；web.host 为绑定主机；service.startTimeoutSecs 为服务启动等待上限（秒）；service.autoStart 为启动应用时自动拉起服务；devtools.autoOpen 为调试用自动打开开发者工具。".into(),
+            web: WebConfig::default(),
+            service: ServiceConfig::default(),
+            devtools: DevtoolsConfig::default(),
+        }
+    }
+}
+
+impl AppConfig {
+    /// 组装 Web 访问地址。
+    fn web_url(&self) -> String {
+        format!("http://{}:{}", self.web.host, self.web.port)
+    }
+
+    /// 配置文件路径（无需 AppHandle，供窗口创建前读取）。
+    fn config_path() -> Option<std::path::PathBuf> {
+        std::env::var("APPDATA").ok().map(|a| {
+            std::path::PathBuf::from(a)
+                .join("com.deepseek.harness-desktop")
+                .join("config.json")
+        })
+    }
+
+    /// 读取配置文件；不存在则写入默认值；解析失败回退默认值。
+    fn load() -> Self {
+        let def = Self::default();
+        let Some(file) = Self::config_path() else {
+            return def;
+        };
+        if let Some(dir) = file.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        if !file.exists() {
+            if let Ok(json) = serde_json::to_string_pretty(&def) {
+                let _ = fs::write(&file, json);
+            }
+            return def;
+        }
+        match fs::read_to_string(&file)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+        {
+            Some(cfg) => cfg,
+            None => {
+                eprintln!("[dsh-desktop] 配置文件解析失败，使用默认值: {}", file.display());
+                def
+            }
+        }
+    }
+}
 
 struct AppState {
     child: Mutex<Option<Child>>,
     exiting: AtomicBool,
 }
+
+/// 托盘「全屏 / 退出全屏」菜单项句柄（文案随主窗口全屏状态切换）。
+static FS_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
+
+/// 托盘「启动 / 停止服务」菜单项句柄（文案随服务状态切换）。
+static SERVICE_TOGGLE_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
 
 // ---------------------------------------------------------------- 序列化类型
 
@@ -62,7 +171,7 @@ enum StartOutcome {
     AlreadyRunning { url: String },
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase", tag = "code", content = "message")]
 enum StartError {
     NodeMissing,
@@ -154,6 +263,55 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
+/// 根据主窗口当前全屏状态，同步托盘「全屏 / 退出全屏」菜单文案。
+fn sync_fs_menu_label(app: &tauri::AppHandle) {
+    let Some(item) = FS_MENU_ITEM.get() else { return };
+    let is_fs = app
+        .get_webview_window("main")
+        .and_then(|win| win.is_fullscreen().ok())
+        .unwrap_or(false);
+    let _ = item.set_text(if is_fs { "退出全屏" } else { "全屏" });
+}
+
+/// 读取当前服务状态：(端口是否被占用, 是否由本应用托管)。
+fn service_state(app: &tauri::AppHandle, cfg: &AppConfig) -> (bool, bool) {
+    let st = app.state::<AppState>();
+    let port_up = port_in_use(cfg.web.port);
+    let mut owned = false;
+    {
+        let mut guard = st.child.lock().unwrap();
+        if let Some(child) = guard.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) => *guard = None, // 进程已退出，清理句柄
+                _ => owned = true,
+            }
+        }
+    }
+    (port_up, owned)
+}
+
+/// 设置托盘「启动/停止服务」菜单项文案与可用状态。
+fn set_service_menu_label(text: &str, enabled: bool) {
+    if let Some(item) = SERVICE_TOGGLE_ITEM.get() {
+        let _ = item.set_text(text);
+        let _ = item.set_enabled(enabled);
+    }
+}
+
+/// 根据当前服务状态同步托盘「启动/停止服务」菜单项。
+fn sync_service_menu_label(app: &tauri::AppHandle) {
+    let cfg = app.state::<AppConfig>();
+    let (port_up, owned) = service_state(app, &cfg);
+    if port_up && owned {
+        set_service_menu_label("停止服务", true);
+    } else if port_up {
+        // 端口被外部进程占用，本应用无法停止
+        set_service_menu_label("停止服务", false);
+    } else {
+        set_service_menu_label("启动服务", true);
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn apply_window_effects(window: &tauri::WebviewWindow) {
     match window_vibrancy::apply_mica(window, Some(true)) {
@@ -164,8 +322,13 @@ fn apply_window_effects(window: &tauri::WebviewWindow) {
 
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+    let back = MenuItem::with_id(app, "back", "返回控制台", true, None::<&str>)?;
+    let svc = MenuItem::with_id(app, "service-toggle", "启动服务", true, None::<&str>)?;
+    let fs = MenuItem::with_id(app, "fullscreen", "全屏", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出应用", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &back, &svc, &fs, &quit])?;
+    let _ = FS_MENU_ITEM.set(fs.clone());
+    let _ = SERVICE_TOGGLE_ITEM.set(svc.clone());
 
     // 用 32×32 PNG 作为托盘图标，DPI 下更清晰
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
@@ -178,6 +341,45 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app),
+            "back" => {
+                // 从 Harness 界面回到应用控制页（Windows 生产环境的应用页面地址）
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.unminimize();
+                    let _ = win.navigate(tauri::Url::parse("http://tauri.localhost/").expect("应用页 URL 解析失败"));
+                }
+            }
+            "service-toggle" => {
+                // 服务启停开关：按当前状态启动或停止，并同步菜单文案
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    let cfg = app.state::<AppConfig>();
+                    let st = app.state::<AppState>();
+                    let (port_up, owned) = service_state(&app, &cfg);
+                    if port_up && owned {
+                        set_service_menu_label("停止中…", false);
+                        let to_kill = st.child.lock().unwrap().take(); // 先取出，释放锁
+                        if let Some(mut c) = to_kill {
+                            kill_tree(c.id());
+                            let _ = c.wait();
+                        }
+                    } else if !port_up {
+                        set_service_menu_label("启动中…", false);
+                        if let Err(e) = start_service_inner(&app, &st.child, &cfg) {
+                            eprintln!("[dsh-desktop] 托盘启动服务失败: {e:?}");
+                        }
+                    }
+                    sync_service_menu_label(&app);
+                });
+            }
+            "fullscreen" => {
+                // 全屏开关：切换主窗口全屏状态，并同步菜单文案
+                if let Some(win) = app.get_webview_window("main") {
+                    let is_fs = win.is_fullscreen().unwrap_or(false);
+                    let _ = win.set_fullscreen(!is_fs);
+                    sync_fs_menu_label(app);
+                }
+            }
             "quit" => {
                 app.state::<AppState>().exiting.store(true, Ordering::SeqCst);
                 app.exit(0);
@@ -213,8 +415,30 @@ fn get_env_info() -> EnvInfo {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigInfo {
+    web_port: u16,
+    web_url: String,
+    auto_open_devtools: bool,
+    auto_start: bool,
+}
+
 #[tauri::command]
-fn get_status(state: State<'_, AppState>) -> StatusInfo {
+fn get_config(cfg: State<'_, AppConfig>) -> ConfigInfo {
+    ConfigInfo {
+        web_port: cfg.web.port,
+        web_url: cfg.web_url(),
+        auto_open_devtools: cfg.devtools.auto_open,
+        auto_start: cfg.service.auto_start,
+    }
+}
+
+#[tauri::command]
+fn get_status(
+    state: State<'_, AppState>,
+    cfg: State<'_, AppConfig>,
+) -> StatusInfo {
     let mut owned = false;
     {
         let mut guard = state.child.lock().unwrap();
@@ -229,30 +453,33 @@ fn get_status(state: State<'_, AppState>) -> StatusInfo {
         }
     }
     StatusInfo {
-        port_in_use: port_in_use(WEB_PORT),
+        port_in_use: port_in_use(cfg.web.port),
         owned,
-        url: WEB_URL.into(),
+        url: cfg.web_url(),
     }
 }
 
-#[tauri::command]
-fn start_service(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
+/// 服务启动核心逻辑（命令、托盘、自动启动共用）。
+fn start_service_inner(
+    app: &tauri::AppHandle,
+    child_state: &Mutex<Option<Child>>,
+    cfg: &AppConfig,
 ) -> Result<StartOutcome, StartError> {
+    let web_url = cfg.web_url();
+    let port = cfg.web.port;
+    let timeout = Duration::from_secs(cfg.service.start_timeout_secs.max(5));
+
     // 1) 环境检测：node 与全局 dsh 必须存在
     let node = where_find("node").ok_or(StartError::NodeMissing)?;
     let dsh_shim = where_find("dsh").ok_or(StartError::DshMissing)?;
 
-    // 2) 端口占用检测：已被占用 → 视为“Harness 可能已在运行”，不重复启动
-    if port_in_use(WEB_PORT) {
-        return Ok(StartOutcome::AlreadyRunning {
-            url: WEB_URL.into(),
-        });
+    // 2) 端口占用检测：已被占用 → 视为已有实例，不重复启动
+    if port_in_use(port) {
+        return Ok(StartOutcome::AlreadyRunning { url: web_url });
     }
 
     // 清理可能残留的旧进程
-    if let Some(mut old) = state.child.lock().unwrap().take() {
+    if let Some(mut old) = child_state.lock().unwrap().take() {
         kill_tree(old.id());
         let _ = old.wait();
     }
@@ -270,7 +497,12 @@ fn start_service(
             c
         }
     };
-    cmd.arg("web").arg("--port").arg(WEB_PORT.to_string());
+    cmd.arg("web").arg("--port").arg(port.to_string());
+
+    // 不弹出控制台窗口：GUI 子系统应用 spawn 控制台子系统进程（node/cmd）时，
+    // Windows 默认会新建一个终端窗口；CREATE_NO_WINDOW 禁止之，输出仍写入日志文件。
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
     // 日志落盘到应用数据目录，便于排错
     let log_dir = app
@@ -294,18 +526,16 @@ fn start_service(
     let child = cmd
         .spawn()
         .map_err(|e| StartError::SpawnFailed(format!("启动 dsh 失败: {e}")))?;
-    *state.child.lock().unwrap() = Some(child);
+    *child_state.lock().unwrap() = Some(child);
 
-    // 4) 等待 3080 端口就绪
-    let deadline = Instant::now() + START_TIMEOUT;
+    // 4) 等待配置端口就绪
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if port_in_use(WEB_PORT) {
-            return Ok(StartOutcome::Started {
-                url: WEB_URL.into(),
-            });
+        if port_in_use(port) {
+            return Ok(StartOutcome::Started { url: web_url });
         }
         {
-            let mut guard = state.child.lock().unwrap();
+            let mut guard = child_state.lock().unwrap();
             if let Some(child) = guard.as_mut() {
                 if let Ok(Some(_)) = child.try_wait() {
                     // 进程已退出：清空句柄，避免后续 get_status 把死进程误判为 owned
@@ -321,9 +551,18 @@ fn start_service(
     }
     Err(StartError::NotReady(format!(
         "启动超时（{}s），请查看日志: {}",
-        START_TIMEOUT.as_secs(),
+        timeout.as_secs(),
         log_file.display()
     )))
+}
+
+#[tauri::command]
+fn start_service(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    cfg: State<'_, AppConfig>,
+) -> Result<StartOutcome, StartError> {
+    start_service_inner(&app, &state.child, &cfg)
 }
 
 #[tauri::command]
@@ -339,6 +578,9 @@ fn stop_service(state: State<'_, AppState>) -> Result<(), String> {
 // ---------------------------------------------------------------- 入口
 
 fn main() {
+    let cfg = AppConfig::load();
+    let setup_cfg = cfg.clone();
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 第二个实例启动时，唤醒已有窗口
@@ -350,26 +592,64 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_env_info,
+            get_config,
             get_status,
             start_service,
             stop_service
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            app.manage(setup_cfg.clone());
+
             build_tray(app.handle())?;
+            sync_fs_menu_label(app.handle());
+            sync_service_menu_label(app.handle());
             #[cfg(target_os = "windows")]
             if let Some(win) = app.get_webview_window("main") {
                 apply_window_effects(&win);
+                // 按配置决定是否自动打开 DevTools（调试用）
+                #[cfg(any(debug_assertions, feature = "devtools"))]
+                if setup_cfg.devtools.auto_open {
+                    let _ = win.open_devtools();
+                }
             }
+
+            // 自动启动服务（配置 service.autoStart，默认开）
+            if setup_cfg.service.auto_start {
+                let app = app.handle().clone();
+                std::thread::spawn(move || {
+                    let cfg = app.state::<AppConfig>();
+                    let st = app.state::<AppState>();
+                    if let Err(e) = start_service_inner(&app, &st.child, &cfg) {
+                        eprintln!("[dsh-desktop] 自动启动服务失败: {e:?}");
+                    }
+                    sync_service_menu_label(&app);
+                });
+            }
+
+            // 周期性同步托盘「启动/停止服务」文案（服务状态可能被顶栏按钮或外部进程改变）
+            {
+                let app = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(Duration::from_secs(2));
+                    sync_service_menu_label(&app);
+                });
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
             // 主窗口关闭 → 最小化到托盘（而非退出）
             if window.label() == "main" {
-                if let WindowEvent::CloseRequested { api, .. } = event {
-                    if !window.app_handle().state::<AppState>().exiting.load(Ordering::SeqCst) {
-                        api.prevent_close();
-                        let _ = window.hide();
+                match event {
+                    WindowEvent::CloseRequested { api, .. } => {
+                        if !window.app_handle().state::<AppState>().exiting.load(Ordering::SeqCst) {
+                            api.prevent_close();
+                            let _ = window.hide();
+                        }
                     }
+                    // 进入/退出全屏会触发窗口尺寸变化：借此同步托盘菜单文案
+                    WindowEvent::Resized(_) => sync_fs_menu_label(window.app_handle()),
+                    _ => {}
                 }
             }
         })

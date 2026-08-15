@@ -8,20 +8,34 @@
   const invoke = TAURI?.core?.invoke;
   const appWindow = TAURI?.window?.getCurrentWindow?.();
 
-  const WEB_URL = "http://127.0.0.1:3080";
+  // 运行时参数：默认值由 get_config（config.json）覆盖，避免硬编码
+  let webPort = 3081;
+  let webUrl = `http://127.0.0.1:${webPort}`;
+
+  async function applyConfig() {
+    if (!invoke) return;
+    try {
+      const cfg = await invoke("get_config");
+      if (cfg && cfg.webPort) {
+        webPort = cfg.webPort;
+        webUrl = cfg.webUrl;
+      }
+    } catch (e) {
+      console.error("get_config 失败，使用默认参数", e);
+    }
+  }
 
   const $ = (id) => document.getElementById(id);
   const els = {
     statusDot: $("status-dot"),
     statusText: $("status-text"),
     btnToggle: $("btn-toggle"),
-    btnFullscreen: $("btn-fullscreen"),
     banner: $("banner"),
     bannerText: $("banner-text"),
     bannerCmd: $("banner-cmd"),
     btnRetry: $("btn-retry"),
-    frame: $("web-frame"),
-    placeholder: $("web-placeholder"),
+    webHint: $("web-hint"),
+    btnEnterHarness: $("btn-enter-harness"),
   };
 
   const state = {
@@ -31,6 +45,8 @@
     busy: false,        // 正在启动/停止
     busyAction: "启动",
     inTauri: !!invoke,
+    runningAtLoad: null, // 首次刷新时服务是否已在运行（托盘返回时为 true，不自动跳转）
+    navigated: false,
   };
 
   // ---------------- 状态渲染 ----------------
@@ -53,10 +69,10 @@
 
   function statusDetail() {
     const { portInUse, owned, busy, busyAction } = state;
-    if (busy) return busyAction === "停止" ? "正在终止 dsh 进程树…" : "等待 3080 端口就绪…";
-    if (portInUse && owned) return `dsh web 服务由本应用托管（${WEB_URL}）`;
-    if (portInUse) return `检测到 ${WEB_URL} 已被占用，未重复启动，已直接加载现有实例`;
-    return `点击「启动服务」运行 dsh web --port 3080（${WEB_URL}）`;
+    if (busy) return busyAction === "停止" ? "正在终止 dsh 进程树…" : `等待 ${webPort} 端口就绪…`;
+    if (portInUse && owned) return `dsh web 服务由本应用托管（${webUrl}）`;
+    if (portInUse) return `检测到 ${webUrl} 已被占用，未重复启动，已直接加载现有实例`;
+    return `点击「启动服务」运行 dsh web --port ${webPort}（${webUrl}）`;
   }
 
   function render() {
@@ -85,18 +101,21 @@
       els.btnToggle.disabled = !state.inTauri || busy || !envOk;
     }
 
-    // Web 主导区：运行中自动加载
-    if (portInUse) {
-      els.placeholder.classList.add("hidden");
-      els.frame.classList.remove("hidden");
-      if (!els.frame.src || !els.frame.src.includes("127.0.0.1")) {
-        els.frame.src = WEB_URL;
-      }
+    // Web 主导区：服务就绪后整窗进入 Harness（跨站 iframe 不可行，改用顶层导航）
+    if (portInUse && !busy) {
+      els.btnEnterHarness.classList.remove("hidden");
+      els.webHint.textContent = `Harness 服务运行中（${webUrl}），点击进入界面`;
     } else {
-      els.frame.classList.add("hidden");
-      els.frame.src = "about:blank"; // 释放渲染进程，回收内存
-      els.placeholder.classList.remove("hidden");
+      els.btnEnterHarness.classList.add("hidden");
+      els.webHint.textContent = busy
+        ? `正在${busyAction}服务…`
+        : "服务启动后，将自动进入 Harness 界面";
     }
+  }
+
+  /** 整窗导航到 Harness（顶层加载，已验证可行）。 */
+  function navigateToHarness() {
+    window.location.href = webUrl;
   }
 
   // ---------------- 环境检测 ----------------
@@ -128,25 +147,11 @@
     }
   }
 
-  // ---------------- 全屏按钮 ----------------
+  // ---------------- 全屏状态（开关已移至系统托盘菜单） ----------------
 
   function updateFsUi(isFs) {
-    document.getElementById("app").classList.toggle("fs", isFs); // 全屏时隐藏顶栏（CSS）
-    if (!els.btnFullscreen) return;
-    els.btnFullscreen.querySelector(".fs-enter").classList.toggle("hidden", isFs);
-    els.btnFullscreen.querySelector(".fs-exit").classList.toggle("hidden", !isFs);
-    els.btnFullscreen.title = isFs ? "退出全屏" : "全屏";
-  }
-
-  async function toggleFullscreen() {
-    if (!appWindow) return;
-    try {
-      const isFs = await appWindow.isFullscreen();
-      await appWindow.setFullscreen(!isFs);
-      updateFsUi(!isFs);
-    } catch (e) {
-      console.error("切换全屏失败", e);
-    }
+    // 全屏时隐藏顶栏（CSS 悬停滑出）
+    document.getElementById("app").classList.toggle("fs", isFs);
   }
 
   // ---------------- 数据刷新 ----------------
@@ -160,7 +165,15 @@
     } catch (e) {
       console.error("get_status 失败", e);
     }
-    // 同步全屏状态（按钮图标 + 顶栏隐藏），例如其它方式进入/退出全屏时保持一致
+    // 首次刷新记录“服务是否已在运行”：托盘返回时已在运行则不自动跳转
+    if (state.runningAtLoad === null) state.runningAtLoad = state.portInUse;
+    // 新启动的服务就绪后自动整窗进入 Harness
+    if (state.portInUse && !state.runningAtLoad && !state.navigated) {
+      state.navigated = true;
+      navigateToHarness();
+      return;
+    }
+    // 同步全屏状态（顶栏隐藏），例如通过托盘菜单进入/退出全屏时保持一致
     if (appWindow) {
       try {
         const isFs = await appWindow.isFullscreen();
@@ -212,15 +225,12 @@
     try {
       const res = await invoke("start_service");
       if (res && res.status === "alreadyRunning") {
-        showBanner(
-          "检测到 3080 端口已被占用，未重复启动，已直接加载现有实例。",
-          undefined,
-          { info: true }
-        );
         await refresh();
       } else {
         await waitPortUp(30000);
       }
+      // 服务就绪 → 整窗进入 Harness
+      if (state.portInUse) navigateToHarness();
     } catch (e) {
       console.error("启动失败", e);
       const msg = e?.message || String(e);
@@ -279,7 +289,7 @@
   // ---------------- 初始化 ----------------
 
   els.btnToggle.addEventListener("click", toggleService);
-  els.btnFullscreen.addEventListener("click", toggleFullscreen);
+  els.btnEnterHarness.addEventListener("click", navigateToHarness);
   initControls();
 
   if (!state.inTauri) {
@@ -288,7 +298,10 @@
     return;
   }
 
-  refreshEnv();
-  refresh();
-  startPolling();
+  (async () => {
+    await applyConfig(); // 先从 config.json 读取端口等参数
+    refreshEnv();
+    refresh();
+    startPolling();
+  })();
 })();

@@ -17,16 +17,17 @@
 
 ## 功能清单
 
-- **启动服务**：`node <dsh 入口> web --port 3080`，日志写入
+- **启动服务**：`node <dsh 入口> web --port 3081`，日志写入
   `%LOCALAPPDATA%\com.deepseek.harness-desktop\logs\dsh-web.log`
 - **停止服务**：`taskkill /PID <pid> /T /F` 强杀整棵进程树，防止端口残留
-- **端口检测**：启动前探测 `127.0.0.1:3080` / `[::1]:3080`；已被占用时顶栏显示琥珀色
+- **端口检测**：启动前探测 `127.0.0.1:3081` / `[::1]:3081`；已被占用时顶栏显示琥珀色
   状态点并直接加载现有实例，不会重复启动
-- **全屏**：顶栏按钮一键切换全屏 / 还原；全屏时顶栏自动隐藏，鼠标移到屏幕顶部边缘
-  即滑出（可随时操作或退出全屏）
-- **内嵌 Web UI**：运行中自动在 iframe 中加载 `http://127.0.0.1:3080`（已验证 dsh 的
-  Web 服务不发送 X-Frame-Options / CSP frame-ancestors，可嵌入）
-- **系统托盘**：关闭主窗口 → 最小化到托盘；托盘菜单：显示主窗口 / 退出应用（退出时先杀进程树）
+- **全屏**：托盘菜单「全屏 / 退出全屏」一键切换（文案随当前状态自动变化）；全屏时顶栏自动隐藏，
+  鼠标移到屏幕顶部边缘即滑出
+- **整窗进入 Harness**：服务就绪后自动整窗导航到 `http://127.0.0.1:3081`（跨站 iframe 不可行，
+  改为顶层导航）
+- **系统托盘**：关闭主窗口 → 最小化到托盘；托盘菜单：显示主窗口 / 返回控制台 / 启动·停止服务
+  （同一项，随服务状态切换文案）/ 全屏 / 退出应用（退出时先杀进程树）
 - **单例模式**：`tauri-plugin-single-instance`，重复启动自动唤醒已有窗口
 - **环境引导**：Node.js / dsh 缺失时界面明确提示，并给出
   `npm install -g @deepseek/dsh` 安装命令；支持一键「重试」无需重启应用
@@ -36,7 +37,7 @@
 
 ```
 xzy-dsh-desktop/
-├── index.html                  # 前端入口（极简顶栏 + 内嵌 iframe）
+├── index.html                  # 前端入口（极简顶栏 + 整窗 Harness）
 ├── src/
 │   ├── main.js                 # 前端控制逻辑（Vanilla JS）
 │   ├── styles.css              # Win11 极简暗色样式
@@ -86,15 +87,26 @@ npm run build:portable
 
 首次 `cargo` 编译需下载依赖（tauri 全链路约 5–15 分钟），之后增量编译很快。
 
+> ⚠️ **必须用 Tauri CLI 编译（`npm run build` / `npm run build:portable`），CLI 会自动启用
+> `tauri/custom-protocol` feature**。若跳过 CLI 直接用 `cargo build --release`（不带该
+> feature），会因 `tauri.conf.json` 配置了 `devUrl` 而按 **dev 模式** 构建，**前端资源不会
+> 嵌入 exe**——运行后应用页面无法加载，显示 `asset not found: index.html` 或「无法访问此页面」。
+> 确需直接跑 cargo 时，请手动补上 feature：
+>
+> ```powershell
+> cargo build --release --features tauri/custom-protocol
+> ```
+
 ## 运行说明
 
-- 启动后点击「启动服务」→ Rust 后端以系统 node 启动 `dsh web --port 3080`，
-  端口就绪后界面自动内嵌加载 Harness Web UI
-- 关闭窗口 = 最小化到托盘（右下角图标）；托盘右键「退出应用」= 真正退出并强杀 dsh 进程
-- 若 3080 已被占用（比如 Harness 已在别处运行），顶栏状态点显示为琥珀色并直接加载
+- 启动后点击「启动服务」→ Rust 后端以系统 node 启动 `dsh web --port 3081`，
+  端口就绪后界面自动整窗进入 Harness Web UI
+- 关闭窗口 = 最小化到托盘（右下角图标）；托盘菜单：显示主窗口 / 返回控制台 / 启动·停止服务
+  （同一项，随服务状态切换文案）/ 全屏 / 退出应用；「退出应用」= 真正退出并强杀 dsh 进程
+- 若 3081 已被占用（比如 Harness 已在别处运行），顶栏状态点显示为琥珀色并直接加载
   现有实例，不会重复启动
-- 顶栏右侧全屏按钮：一键进入/退出全屏；全屏时顶栏自动隐藏，鼠标移到屏幕顶部边缘
-  即滑出（可随时操作或退出全屏）
+- 托盘菜单「全屏 / 退出全屏」：一键进入/退出全屏；全屏时顶栏自动隐藏，鼠标移到屏幕
+  顶部边缘即滑出
 
 ## 内存说明
 
@@ -123,6 +135,24 @@ dsh 服务本身是独立 Node 进程，另计约 60–100 MB（不含在壳内�
 
 重新生成图标：`npm run icons` 后执行 `npm run build` 即可（`build.rs` 已声明
 `rerun-if-changed=icons`，换图标会自动重新嵌入 exe 资源，无需手动清理）。
+
+## 配置文件
+
+首次运行会在 `%APPDATA%\com.deepseek.harness-desktop\config.json` 自动生成配置文件，
+修改后**重启应用生效**：
+
+```json
+{
+  "web": { "host": "127.0.0.1", "port": 3081 },
+  "service": { "startTimeoutSecs": 25 },
+  "devtools": { "autoOpen": false }
+}
+```
+
+- `web.port`：dsh web 服务端口（默认 3081，避开 Harness 默认 3080，可与现有会话并存）
+- `web.host`：服务绑定主机（默认回环地址）
+- `service.startTimeoutSecs`：服务启动等待上限（秒）
+- `devtools.autoOpen`：调试用，启动时自动打开开发者工具
 
 ## 已知边界
 

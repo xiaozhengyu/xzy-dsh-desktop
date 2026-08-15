@@ -22,10 +22,10 @@
         "center": true,
         "resizable": true,
         "fullscreen": false,
-        "decorations": false,
-        "transparent": true,
-        "shadow": true,
-        "visible": true
+        "decorations": true,
+        "visible": true,
+        "additionalBrowserArgs": "--proxy-bypass-list=<-loopback>",
+        "devtools": true
       }
     ],
     "security": {

@@ -21,10 +21,6 @@
       <div class="tb-right">
         <button id="btn-toggle" class="btn-toggle start" title="启动 / 停止 dsh web 服务">启动服务</button>
         <div class="win-controls">
-          <button id="btn-fullscreen" class="tb-btn" title="全屏" aria-label="全屏">
-            <svg class="fs-enter" width="12" height="12" viewBox="0 0 12 12"><path d="M1 4V1h3M11 4V1H8M1 8v3h3M11 8v3H8" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
-            <svg class="fs-exit hidden" width="12" height="12" viewBox="0 0 12 12"><path d="M4 1v3H1M8 1v3h3M4 11V8H1M8 11V8h3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
-          </button>
           <button id="btn-min" class="tb-btn" title="最小化" aria-label="最小化">
             <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.1"/></svg>
           </button>
@@ -46,12 +42,12 @@
       <button id="btn-retry" class="banner-btn hidden">重试</button>
     </div>
 
-    <!-- Web 界面主导区 -->
+    <!-- Web 界面主导区（服务就绪后整窗进入 Harness） -->
     <main class="web-area">
       <div class="web-frame-wrap">
-        <iframe id="web-frame" class="hidden" title="DeepSeek Harness Web UI"></iframe>
         <div id="web-placeholder" class="web-placeholder">
-          <p>服务启动后，Harness Web 界面会显示在这里</p>
+          <p id="web-hint">服务启动后，将自动进入 Harness 界面</p>
+          <button id="btn-enter-harness" class="btn btn-primary hidden">进入 Harness 界面</button>
         </div>
       </div>
     </main>
