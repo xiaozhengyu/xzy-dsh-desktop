@@ -281,11 +281,10 @@ fn apply_window_effects(window: &tauri::WebviewWindow) {
 }
 
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let back = MenuItem::with_id(app, "back", "返回控制台", true, None::<&str>)?;
     let fs = MenuItem::with_id(app, "fullscreen", "全屏", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出应用", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &back, &fs, &quit])?;
+    let menu = Menu::with_items(app, &[&back, &fs, &quit])?;
     let _ = FS_MENU_ITEM.set(fs.clone());
 
     // 用 32×32 PNG 作为托盘图标，DPI 下更清晰
@@ -298,7 +297,6 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" => show_main(app),
             "back" => {
                 // 从 Harness 界面回到应用控制页（Windows 生产环境的应用页面地址）
                 if let Some(win) = app.get_webview_window("main") {
