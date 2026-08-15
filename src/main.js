@@ -15,6 +15,7 @@
     statusDot: $("status-dot"),
     statusText: $("status-text"),
     btnToggle: $("btn-toggle"),
+    btnFullscreen: $("btn-fullscreen"),
     banner: $("banner"),
     bannerText: $("banner-text"),
     bannerCmd: $("banner-cmd"),
@@ -127,6 +128,27 @@
     }
   }
 
+  // ---------------- 全屏按钮 ----------------
+
+  function updateFsUi(isFs) {
+    document.getElementById("app").classList.toggle("fs", isFs); // 全屏时隐藏顶栏（CSS）
+    if (!els.btnFullscreen) return;
+    els.btnFullscreen.querySelector(".fs-enter").classList.toggle("hidden", isFs);
+    els.btnFullscreen.querySelector(".fs-exit").classList.toggle("hidden", !isFs);
+    els.btnFullscreen.title = isFs ? "退出全屏" : "全屏";
+  }
+
+  async function toggleFullscreen() {
+    if (!appWindow) return;
+    try {
+      const isFs = await appWindow.isFullscreen();
+      await appWindow.setFullscreen(!isFs);
+      updateFsUi(!isFs);
+    } catch (e) {
+      console.error("切换全屏失败", e);
+    }
+  }
+
   // ---------------- 数据刷新 ----------------
 
   async function refresh() {
@@ -137,6 +159,13 @@
       state.owned = s.owned;
     } catch (e) {
       console.error("get_status 失败", e);
+    }
+    // 同步全屏状态（按钮图标 + 顶栏隐藏），例如其它方式进入/退出全屏时保持一致
+    if (appWindow) {
+      try {
+        const isFs = await appWindow.isFullscreen();
+        updateFsUi(isFs);
+      } catch (e) { /* 忽略 */ }
     }
     render();
   }
@@ -250,6 +279,7 @@
   // ---------------- 初始化 ----------------
 
   els.btnToggle.addEventListener("click", toggleService);
+  els.btnFullscreen.addEventListener("click", toggleFullscreen);
   initControls();
 
   if (!state.inTauri) {

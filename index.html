@@ -8,8 +8,9 @@
 </head>
 <body>
   <div id="app">
-    <!-- 唯一控制行：品牌 + 状态 + 启停 + 窗口按钮 -->
-    <header class="topbar" data-tauri-drag-region>
+    <!-- 全屏悬浮容器：普通模式为普通块级，全屏模式下固定顶部、可滑出 -->
+    <div id="fs-chrome">
+      <header class="topbar" data-tauri-drag-region>
       <div class="tb-left" data-tauri-drag-region>
         <img class="brand-dot" data-tauri-drag-region src="./src/brand-icon.png" alt="鲸鱼娘" draggable="false" />
       </div>
@@ -20,6 +21,10 @@
       <div class="tb-right">
         <button id="btn-toggle" class="btn-toggle start" title="启动 / 停止 dsh web 服务">启动服务</button>
         <div class="win-controls">
+          <button id="btn-fullscreen" class="tb-btn" title="全屏" aria-label="全屏">
+            <svg class="fs-enter" width="12" height="12" viewBox="0 0 12 12"><path d="M1 4V1h3M11 4V1H8M1 8v3h3M11 8v3H8" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+            <svg class="fs-exit hidden" width="12" height="12" viewBox="0 0 12 12"><path d="M4 1v3H1M8 1v3h3M4 11V8H1M8 11V8h3" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linecap="round"/></svg>
+          </button>
           <button id="btn-min" class="tb-btn" title="最小化" aria-label="最小化">
             <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.1"/></svg>
           </button>
@@ -32,6 +37,7 @@
         </div>
       </div>
     </header>
+    </div>
 
     <!-- 细条横幅：仅在异常/提示时出现 -->
     <div id="banner" class="banner hidden">
