@@ -328,7 +328,7 @@ fn apply_window_effects(window: &tauri::WebviewWindow) {
 }
 
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let back = MenuItem::with_id(app, "back", "返回控制台", true, None::<&str>)?;
+    let back = MenuItem::with_id(app, "back", "控制台", true, None::<&str>)?;
     let fs = MenuItem::with_id(app, "fullscreen", "全屏", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出应用", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&back, &fs, &quit])?;
