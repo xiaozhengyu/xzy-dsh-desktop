@@ -1,11 +1,11 @@
 /* DeepSeek Harness 桌面端 —— 清爽极简（深色 Mica） */
 
 :root {
-  --bg: rgba(24, 26, 30, 0.72);          /* 半透明，让 Mica 透出 */
-  --line: rgba(255, 255, 255, 0.07);     /* 发丝级分隔线 */
+  --bg: #181a1e;                       /* 不透明深色底（窗口非透明，无需半透明） */
+  --line: rgba(255, 255, 255, 0.07);   /* 发丝级分隔线 */
   --text: #e8eaed;
   --text-dim: #8b929c;
-  --accent: #4cc2ff;                     /* 唯一强调色 */
+  --accent: #4cc2ff;                   /* 唯一强调色 */
   --green: #34d399;
   --amber: #fbbf24;
   --red: #f87171;
@@ -17,7 +17,7 @@
 html, body { height: 100%; }
 
 body {
-  background: transparent;
+  background: #101216;
   color: var(--text);
   font-family: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
   font-size: 13px;
@@ -30,8 +30,6 @@ body {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 12px;
   overflow: hidden;
 }
 

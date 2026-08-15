@@ -118,16 +118,26 @@
     window.location.href = webUrl;
   }
 
+  /**
+   * 就绪后进入 Harness：端口能连上 ≠ dsh web 后端服务（slots/connection/remote 等）已初始化，
+   * 立即跳转可能触发 “web boot: entries did not activate” 竞态。手动点击「进入 Harness」
+   * 走 navigateToHarness 立即跳转；自动/启动后跳转走这里，缓冲一段时间再进入。
+   */
+  async function enterHarnessAfterReady() {
+    await sleep(2500);
+    navigateToHarness();
+  }
+
   // ---------------- 环境检测 ----------------
 
-  async function refreshEnv() {
+  async function refreshEnv(force) {
     if (!invoke) {
       showBanner("当前不在 Tauri 桌面环境中运行", "请使用 npm run tauri dev 启动应用");
       render();
       return;
     }
     try {
-      const env = await invoke("get_env_info");
+      const env = await invoke("get_env_info", { force: !!force });
       state.env = env;
       if (!env.node || !env.dsh) {
         const missing = [];
@@ -136,7 +146,7 @@
         showBanner(
           `缺少运行环境：${missing.join("、")}`,
           env.dsh ? undefined : "npm install -g @deepseek/dsh",
-          { retry: refreshEnv }
+          { retry: () => refreshEnv(true) }
         );
       } else {
         hideBanner();
@@ -167,10 +177,10 @@
     }
     // 首次刷新记录“服务是否已在运行”：托盘返回时已在运行则不自动跳转
     if (state.runningAtLoad === null) state.runningAtLoad = state.portInUse;
-    // 新启动的服务就绪后自动整窗进入 Harness
+    // 新启动的服务就绪后自动整窗进入 Harness（带就绪缓冲，避免后端未就绪的 boot 竞态）
     if (state.portInUse && !state.runningAtLoad && !state.navigated) {
       state.navigated = true;
-      navigateToHarness();
+      enterHarnessAfterReady();
       return;
     }
     // 同步全屏状态（顶栏隐藏），例如通过托盘菜单进入/退出全屏时保持一致
@@ -229,8 +239,8 @@
       } else {
         await waitPortUp(30000);
       }
-      // 服务就绪 → 整窗进入 Harness
-      if (state.portInUse) navigateToHarness();
+      // 服务就绪 → 整窗进入 Harness（带就绪缓冲）
+      if (state.portInUse) enterHarnessAfterReady();
     } catch (e) {
       console.error("启动失败", e);
       const msg = e?.message || String(e);

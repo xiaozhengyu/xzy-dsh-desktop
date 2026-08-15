@@ -138,17 +138,16 @@ impl AppConfig {
 struct AppState {
     child: Mutex<Option<Child>>,
     exiting: AtomicBool,
+    /// 环境检测缓存（node/dsh 路径启动后不会变，避免每次进入控制台页都起子进程探测）。
+    env_info: Mutex<Option<EnvInfo>>,
 }
 
 /// 托盘「全屏 / 退出全屏」菜单项句柄（文案随主窗口全屏状态切换）。
 static FS_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
 
-/// 托盘「启动 / 停止服务」菜单项句柄（文案随服务状态切换）。
-static SERVICE_TOGGLE_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
-
 // ---------------------------------------------------------------- 序列化类型
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EnvInfo {
     node: Option<String>,
@@ -273,45 +272,6 @@ fn sync_fs_menu_label(app: &tauri::AppHandle) {
     let _ = item.set_text(if is_fs { "退出全屏" } else { "全屏" });
 }
 
-/// 读取当前服务状态：(端口是否被占用, 是否由本应用托管)。
-fn service_state(app: &tauri::AppHandle, cfg: &AppConfig) -> (bool, bool) {
-    let st = app.state::<AppState>();
-    let port_up = port_in_use(cfg.web.port);
-    let mut owned = false;
-    {
-        let mut guard = st.child.lock().unwrap();
-        if let Some(child) = guard.as_mut() {
-            match child.try_wait() {
-                Ok(Some(_)) => *guard = None, // 进程已退出，清理句柄
-                _ => owned = true,
-            }
-        }
-    }
-    (port_up, owned)
-}
-
-/// 设置托盘「启动/停止服务」菜单项文案与可用状态。
-fn set_service_menu_label(text: &str, enabled: bool) {
-    if let Some(item) = SERVICE_TOGGLE_ITEM.get() {
-        let _ = item.set_text(text);
-        let _ = item.set_enabled(enabled);
-    }
-}
-
-/// 根据当前服务状态同步托盘「启动/停止服务」菜单项。
-fn sync_service_menu_label(app: &tauri::AppHandle) {
-    let cfg = app.state::<AppConfig>();
-    let (port_up, owned) = service_state(app, &cfg);
-    if port_up && owned {
-        set_service_menu_label("停止服务", true);
-    } else if port_up {
-        // 端口被外部进程占用，本应用无法停止
-        set_service_menu_label("停止服务", false);
-    } else {
-        set_service_menu_label("启动服务", true);
-    }
-}
-
 #[cfg(target_os = "windows")]
 fn apply_window_effects(window: &tauri::WebviewWindow) {
     match window_vibrancy::apply_mica(window, Some(true)) {
@@ -323,12 +283,10 @@ fn apply_window_effects(window: &tauri::WebviewWindow) {
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
     let back = MenuItem::with_id(app, "back", "返回控制台", true, None::<&str>)?;
-    let svc = MenuItem::with_id(app, "service-toggle", "启动服务", true, None::<&str>)?;
     let fs = MenuItem::with_id(app, "fullscreen", "全屏", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出应用", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &back, &svc, &fs, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &back, &fs, &quit])?;
     let _ = FS_MENU_ITEM.set(fs.clone());
-    let _ = SERVICE_TOGGLE_ITEM.set(svc.clone());
 
     // 用 32×32 PNG 作为托盘图标，DPI 下更清晰
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
@@ -348,29 +306,6 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     let _ = win.unminimize();
                     let _ = win.navigate(tauri::Url::parse("http://tauri.localhost/").expect("应用页 URL 解析失败"));
                 }
-            }
-            "service-toggle" => {
-                // 服务启停开关：按当前状态启动或停止，并同步菜单文案
-                let app = app.clone();
-                std::thread::spawn(move || {
-                    let cfg = app.state::<AppConfig>();
-                    let st = app.state::<AppState>();
-                    let (port_up, owned) = service_state(&app, &cfg);
-                    if port_up && owned {
-                        set_service_menu_label("停止中…", false);
-                        let to_kill = st.child.lock().unwrap().take(); // 先取出，释放锁
-                        if let Some(mut c) = to_kill {
-                            kill_tree(c.id());
-                            let _ = c.wait();
-                        }
-                    } else if !port_up {
-                        set_service_menu_label("启动中…", false);
-                        if let Err(e) = start_service_inner(&app, &st.child, &cfg) {
-                            eprintln!("[dsh-desktop] 托盘启动服务失败: {e:?}");
-                        }
-                    }
-                    sync_service_menu_label(&app);
-                });
             }
             "fullscreen" => {
                 // 全屏开关：切换主窗口全屏状态，并同步菜单文案
@@ -403,16 +338,24 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 // ---------------------------------------------------------------- 命令
 
-#[tauri::command]
-fn get_env_info() -> EnvInfo {
+/// 环境检测：结果缓存于 AppState（force=true 时强制重新探测，用于“重试”按钮）。
+#[tauri::command(async)]
+fn get_env_info(state: State<'_, AppState>, force: Option<bool>) -> EnvInfo {
+    if !force.unwrap_or(false) {
+        if let Some(cached) = state.env_info.lock().unwrap().as_ref() {
+            return cached.clone();
+        }
+    }
     let node = where_find("node");
     let dsh = where_find("dsh");
     let dsh_entry = dsh.as_deref().and_then(resolve_dsh_entry);
-    EnvInfo {
+    let info = EnvInfo {
         node,
         dsh,
         dsh_entry,
-    }
+    };
+    *state.env_info.lock().unwrap() = Some(info.clone());
+    info
 }
 
 #[derive(Serialize)]
@@ -434,7 +377,7 @@ fn get_config(cfg: State<'_, AppConfig>) -> ConfigInfo {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_status(
     state: State<'_, AppState>,
     cfg: State<'_, AppConfig>,
@@ -556,7 +499,7 @@ fn start_service_inner(
     )))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn start_service(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -565,7 +508,7 @@ fn start_service(
     start_service_inner(&app, &state.child, &cfg)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stop_service(state: State<'_, AppState>) -> Result<(), String> {
     let child = state.child.lock().unwrap().take();
     if let Some(mut c) = child {
@@ -589,6 +532,7 @@ fn main() {
         .manage(AppState {
             child: Mutex::new(None),
             exiting: AtomicBool::new(false),
+            env_info: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_env_info,
@@ -602,7 +546,6 @@ fn main() {
 
             build_tray(app.handle())?;
             sync_fs_menu_label(app.handle());
-            sync_service_menu_label(app.handle());
             #[cfg(target_os = "windows")]
             if let Some(win) = app.get_webview_window("main") {
                 apply_window_effects(&win);
@@ -622,16 +565,6 @@ fn main() {
                     if let Err(e) = start_service_inner(&app, &st.child, &cfg) {
                         eprintln!("[dsh-desktop] 自动启动服务失败: {e:?}");
                     }
-                    sync_service_menu_label(&app);
-                });
-            }
-
-            // 周期性同步托盘「启动/停止服务」文案（服务状态可能被顶栏按钮或外部进程改变）
-            {
-                let app = app.handle().clone();
-                std::thread::spawn(move || loop {
-                    std::thread::sleep(Duration::from_secs(2));
-                    sync_service_menu_label(&app);
                 });
             }
 
