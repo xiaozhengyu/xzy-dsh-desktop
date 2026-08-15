@@ -183,7 +183,12 @@ enum StartError {
 
 /// 在 PATH 中查找可执行文件，返回第一个带扩展名（.cmd/.exe）的条目。
 fn where_find(exe: &str) -> Option<String> {
-    let out = Command::new("where").arg(exe).output().ok()?;
+    let mut cmd = Command::new("where");
+    cmd.arg(exe);
+    // 隐藏控制台窗口：GUI 子系统应用 spawn 控制台进程（where.exe）时会新建终端窗口
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -244,12 +249,12 @@ fn port_in_use(port: u16) -> bool {
 
 /// 用 Windows 原生 taskkill 强杀进程树（含子进程），防止端口残留。
 fn kill_tree(pid: u32) {
-    let _ = Command::new("taskkill")
-        .arg("/PID")
-        .arg(pid.to_string())
-        .arg("/T")
-        .arg("/F")
-        .output();
+    let mut cmd = Command::new("taskkill");
+    cmd.arg("/PID").arg(pid.to_string()).arg("/T").arg("/F");
+    // 隐藏控制台窗口：taskkill 为控制台进程，spawn 时会新建终端窗口
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let _ = cmd.output();
 }
 
 // ---------------------------------------------------------------- 窗口 / 托盘
