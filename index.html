@@ -8,78 +8,46 @@
 </head>
 <body>
   <div id="app">
-    <!-- 自定义标题栏（Mica 透明背景 + 拖拽区域） -->
-    <header class="titlebar" data-tauri-drag-region>
-      <div class="titlebar-left" data-tauri-drag-region>
+    <!-- 唯一控制行：品牌 + 状态 + 启停 + 窗口按钮 -->
+    <header class="topbar" data-tauri-drag-region>
+      <div class="tb-left" data-tauri-drag-region>
         <img class="brand-dot" data-tauri-drag-region src="./src/brand-icon.png" alt="鲸鱼娘" draggable="false" />
-        <span class="brand-name" data-tauri-drag-region>DeepSeek Harness 桌面端</span>
-        <span class="brand-sub" data-tauri-drag-region>dsh · 不内嵌 Node.js · Windows 11</span>
       </div>
-      <div class="titlebar-actions">
-        <button id="btn-min" class="tb-btn" title="最小化" aria-label="最小化">
-          <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.1"/></svg>
-        </button>
-        <button id="btn-max" class="tb-btn" title="最大化/还原" aria-label="最大化">
-          <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.6" y="0.6" width="8.8" height="8.8" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
-        </button>
-        <button id="btn-close" class="tb-btn tb-close" title="关闭到托盘" aria-label="关闭到托盘">
-          <svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1.1"/><line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1.1"/></svg>
-        </button>
+      <div class="tb-status" data-tauri-drag-region>
+        <span id="status-dot" class="status-dot stopped" data-tauri-drag-region></span>
+        <span id="status-text" data-tauri-drag-region>服务已停止</span>
+      </div>
+      <div class="tb-right">
+        <button id="btn-toggle" class="btn-toggle start" title="启动 / 停止 dsh web 服务">启动服务</button>
+        <div class="win-controls">
+          <button id="btn-min" class="tb-btn" title="最小化" aria-label="最小化">
+            <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.1"/></svg>
+          </button>
+          <button id="btn-max" class="tb-btn" title="最大化/还原" aria-label="最大化">
+            <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.6" y="0.6" width="8.8" height="8.8" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
+          </button>
+          <button id="btn-close" class="tb-btn tb-close" title="关闭到托盘" aria-label="关闭到托盘">
+            <svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1.1"/><line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1.1"/></svg>
+          </button>
+        </div>
       </div>
     </header>
 
-    <main class="panel">
-      <!-- 状态区 -->
-      <section class="hero">
-        <div id="status-dot" class="status-dot stopped"></div>
-        <div class="hero-text">
-          <h1 id="status-title">服务已停止</h1>
-          <p id="status-detail">点击「启动服务」运行 dsh web --port 3080（http://127.0.0.1:3080）</p>
+    <!-- 细条横幅：仅在异常/提示时出现 -->
+    <div id="banner" class="banner hidden">
+      <span id="banner-text"></span>
+      <code id="banner-cmd" class="hidden"></code>
+      <button id="btn-retry" class="banner-btn hidden">重试</button>
+    </div>
+
+    <!-- Web 界面主导区 -->
+    <main class="web-area">
+      <div class="web-frame-wrap">
+        <iframe id="web-frame" class="hidden" title="DeepSeek Harness Web UI"></iframe>
+        <div id="web-placeholder" class="web-placeholder">
+          <p>服务启动后，Harness Web 界面会显示在这里</p>
         </div>
-      </section>
-
-      <!-- 运行环境 -->
-      <section class="env-row">
-        <div class="chip" id="chip-node"><span class="chip-icon">?</span><span class="chip-label">Node.js</span></div>
-        <div class="chip" id="chip-dsh"><span class="chip-icon">?</span><span class="chip-label">dsh</span></div>
-        <div class="chip" id="chip-webview2"><span class="chip-icon">?</span><span class="chip-label">WebView2</span></div>
-        <button id="btn-env-refresh" class="mini-btn" title="重新检测运行环境">⟳ 重新检测</button>
-      </section>
-
-      <!-- 操作按钮 -->
-      <section class="actions">
-        <button id="btn-start" class="btn btn-primary">启动服务</button>
-        <button id="btn-stop" class="btn btn-danger" disabled>停止服务</button>
-        <button id="btn-open" class="btn btn-ghost" disabled>在新窗口打开</button>
-      </section>
-
-      <!-- 错误 / 提示横幅 -->
-      <div id="banner" class="banner hidden">
-        <p id="banner-text"></p>
-        <code id="banner-cmd" class="hidden"></code>
       </div>
-
-      <!-- 内嵌 Web UI -->
-      <section class="web-area">
-        <div class="web-toolbar">
-          <span class="web-title">Harness Web UI</span>
-          <span id="web-badge" class="web-badge">未连接</span>
-          <span class="spacer"></span>
-          <label class="autoload" title="关闭后运行中不自动加载 Web 界面，可显著降低内存占用；需要时手动加载">
-            <input type="checkbox" id="chk-autoload" checked />自动加载
-          </label>
-          <button id="btn-reload" class="mini-btn" disabled>刷新</button>
-          <button id="btn-log" class="mini-btn" disabled>日志</button>
-        </div>
-        <div class="web-frame-wrap">
-          <iframe id="web-frame" class="hidden" title="DeepSeek Harness Web UI"></iframe>
-          <div id="web-placeholder" class="web-placeholder">
-            <p>Web 界面将在服务启动后自动加载</p>
-            <button id="btn-load-web" class="btn btn-ghost hidden">加载 Web 界面</button>
-          </div>
-        </div>
-        <pre id="log-view" class="log-view hidden"></pre>
-      </section>
     </main>
   </div>
   <script src="./src/main.js"></script>

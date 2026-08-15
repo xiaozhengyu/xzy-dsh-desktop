@@ -25,7 +25,7 @@ use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    Manager, RunEvent, State, WindowEvent,
 };
 
 const WEB_PORT: u16 = 3080;
@@ -336,40 +336,6 @@ fn stop_service(state: State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn read_log(app: tauri::AppHandle) -> Result<String, String> {
-    let log_dir = app
-        .path()
-        .app_log_dir()
-        .map_err(|e| e.to_string())?;
-    let log_file = log_dir.join("dsh-web.log");
-    match fs::read_to_string(&log_file) {
-        Ok(s) => {
-            let tail: String = s.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
-            Ok(tail)
-        }
-        Err(_) => Ok(String::new()),
-    }
-}
-
-#[tauri::command]
-fn open_web_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window("web") {
-        let _ = w.show();
-        let _ = w.set_focus();
-        return Ok(());
-    }
-    let url = url::Url::parse(WEB_URL).map_err(|e| e.to_string())?;
-    WebviewWindowBuilder::new(&app, "web", WebviewUrl::External(url))
-        .title("DeepSeek Harness")
-        .inner_size(1280.0, 840.0)
-        .min_inner_size(800.0, 600.0)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 // ---------------------------------------------------------------- 入口
 
 fn main() {
@@ -386,9 +352,7 @@ fn main() {
             get_env_info,
             get_status,
             start_service,
-            stop_service,
-            read_log,
-            open_web_window
+            stop_service
         ])
         .setup(|app| {
             build_tray(app.handle())?;
