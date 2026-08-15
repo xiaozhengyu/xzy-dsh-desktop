@@ -238,6 +238,12 @@ dsh 服务本身是独立 Node 进程，另计约 60–100 MB（不含在壳内�
 14. **`Cargo.toml` 行尾符会被构建工具改动**（LF/CRLF）。内容零差异但 git 显示已修改；
     提交前 `git checkout -- src-tauri/Cargo.toml` 还原，避免把行尾噪音混进提交。
 
-15. **`dsh web`（端口 3081）是独立 node 进程**，异常强杀应用不会自动清理它。
+15. **GUI 应用 spawn 控制台子系统进程会弹终端窗口**。`where`/`taskkill`/`node`/`cmd`
+    都是控制台进程，父进程无控制台时 Windows 会为它们新建终端（默认终端是
+    Windows Terminal 时就会弹窗）。**所有 `Command::new` 都要加**
+    `#[cfg(windows)] cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW`，
+    只给 dsh 服务那处加是不够的。
+
+16. **`dsh web`（端口 3081）是独立 node 进程**，异常强杀应用不会自动清理它。
     清理方法：`Get-NetTCPConnection -LocalPort 3081` 找到 `OwningProcess` 后
     `taskkill /PID <pid> /T /F`。
