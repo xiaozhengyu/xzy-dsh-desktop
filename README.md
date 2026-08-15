@@ -1,4 +1,4 @@
-# DeepSeek Harness 桌面端（dsh-desktop）
+# DSH 桌面端（dsh-desktop）
 
 给 DeepSeek Harness CLI（`dsh`）做的 **Windows 11 专属桌面壳**：Tauri 2（Rust + WebView2），
 系统托盘常驻、单例运行、一键启动/停止 `dsh web` 服务，并内嵌 Harness 的 Web UI。

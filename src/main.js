@@ -1,4 +1,4 @@
-// DeepSeek Harness 桌面端 —— 前端控制逻辑（Vanilla JS，无框架）
+// DSH 桌面端 —— 前端控制逻辑（Vanilla JS，无框架）
 // 极简版：顶栏（状态 + 启停）+ 全屏 Web 界面，无多余工具。
 // 通过 window.__TAURI__（withGlobalTauri 注入）调用 Rust 后端命令。
 (() => {

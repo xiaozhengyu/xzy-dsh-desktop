@@ -1,4 +1,4 @@
-// DeepSeek Harness 桌面端 —— Tauri 2 外壳（仅 Windows 11）
+// DSH 桌面端 —— Tauri 2 外壳（仅 Windows 11）
 //
 // 设计要点：
 //  - 不内嵌任何 Node.js 运行时：启动时直接调用系统 PATH 中的全局 node 与 dsh。
@@ -84,7 +84,7 @@ struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            note: "DeepSeek Harness 桌面端配置文件。修改后重启应用生效。web.port 为 dsh web 服务端口（默认 3081，避开 Harness 默认 3080 可与现有会话并存）；web.host 为绑定主机；service.startTimeoutSecs 为服务启动等待上限（秒）；service.autoStart 为启动应用时自动拉起服务；devtools.autoOpen 为调试用自动打开开发者工具。".into(),
+            note: "DSH 桌面端配置文件。修改后重启应用生效。web.port 为 dsh web 服务端口（默认 3081，避开 Harness 默认 3080 可与现有会话并存）；web.host 为绑定主机；service.startTimeoutSecs 为服务启动等待上限（秒）；service.autoStart 为启动应用时自动拉起服务；devtools.autoOpen 为调试用自动打开开发者工具。".into(),
             web: WebConfig::default(),
             service: ServiceConfig::default(),
             devtools: DevtoolsConfig::default(),
@@ -294,7 +294,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     TrayIconBuilder::with_id("main-tray")
         .icon(icon)
-        .tooltip("DeepSeek Harness 桌面端")
+        .tooltip("DSH 桌面端")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
