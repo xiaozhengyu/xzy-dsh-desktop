@@ -2,6 +2,7 @@
 
 给 DeepSeek Harness CLI（`dsh`）做的 **Windows 11 专属桌面壳**：Tauri 2（Rust + WebView2），
 系统托盘常驻、单例运行、一键启动/停止 `dsh web` 服务，并内嵌 Harness 的 Web UI。
+界面为极简单行顶栏（状态 + 启停 + 窗口控制）+ 全屏 Harness Web 界面。
 **不内嵌任何 Node.js 运行时**——启动时直接调用系统 PATH 中的全局 `node` 与 `dsh`。
 
 ## 硬性要求对照
@@ -9,7 +10,7 @@
 | 要求 | 实现 |
 |---|---|
 | 技术栈 | Tauri 2（Rust + Vanilla JS 前端） |
-| 内存目标 | 壳本体（主进程）私有内存 ≈ 60–70 MB；整体含 WebView2 见下方「内存说明」 |
+| 内存目标 | 壳本体（主进程）私有内存 ≈ 41 MB；整体含 WebView2 见下方「内存说明」 |
 | 平台 | 仅 Windows 11（WebView2 内置）；代码不引入任何跨平台分支逻辑 |
 | 不内嵌 Node.js | 通过 `where node` / `where dsh` 定位系统全局命令；解析 `dsh.cmd` shim 得到真实 JS 入口后用 `Command::new(node)` 直接执行；解析失败回退 `cmd /C dsh` |
 | 安装包 | NSIS 安装包（`tauri build`）或便携版 exe（`tauri build --no-bundle`），exe ≈ 3.3 MB、安装包 ≈ 1.2 MB |
@@ -19,8 +20,8 @@
 - **启动服务**：`node <dsh 入口> web --port 3080`，日志写入
   `%LOCALAPPDATA%\com.deepseek.harness-desktop\logs\dsh-web.log`
 - **停止服务**：`taskkill /PID <pid> /T /F` 强杀整棵进程树，防止端口残留
-- **端口检测**：启动前探测 `127.0.0.1:3080` / `[::1]:3080`；已被占用 → 提示
-  “Harness 可能已在运行”，直接加载现有实例
+- **端口检测**：启动前探测 `127.0.0.1:3080` / `[::1]:3080`；已被占用时顶栏显示琥珀色
+  状态点并直接加载现有实例，不会重复启动
 - **全屏**：顶栏按钮一键切换全屏 / 还原；全屏时顶栏自动隐藏，鼠标移到屏幕顶部边缘
   即滑出（可随时操作或退出全屏）
 - **内嵌 Web UI**：运行中自动在 iframe 中加载 `http://127.0.0.1:3080`（已验证 dsh 的
@@ -28,24 +29,27 @@
 - **系统托盘**：关闭主窗口 → 最小化到托盘；托盘菜单：显示主窗口 / 退出应用（退出时先杀进程树）
 - **单例模式**：`tauri-plugin-single-instance`，重复启动自动唤醒已有窗口
 - **环境引导**：Node.js / dsh 缺失时界面明确提示，并给出
-  `npm install -g @deepseek/dsh` 安装命令；支持「重新检测」无需重启
+  `npm install -g @deepseek/dsh` 安装命令；支持一键「重试」无需重启应用
 - **Mica 背景**：`window-vibrancy` 应用 Windows 11 云母材质（失败时自动降级为纯色）
 
 ## 目录结构
 
 ```
 xzy-dsh-desktop/
-├── index.html                  # 前端入口（控制面板 + 内嵌 iframe）
+├── index.html                  # 前端入口（极简顶栏 + 内嵌 iframe）
 ├── src/
 │   ├── main.js                 # 前端控制逻辑（Vanilla JS）
-│   └── styles.css              # Win11 极简暗色样式
+│   ├── styles.css              # Win11 极简暗色样式
+│   └── brand-icon.png          # 顶栏鲸鱼娘图标（64×64）
 ├── scripts/
 │   ├── frontend.mjs            # 复制前端 → dist/；--serve 启动 dev 静态服务器
 │   ├── generate-icon.ps1       # 生成 assets/app-icon.png（1024×1024）
+│   ├── fetch-icon.mjs          # 下载鲸鱼娘图标原始素材到 assets/
 │   └── crates-mirror.mjs       # （仅沙箱构建用）本地 crates.io 代理，正常机器可删除
 ├── assets/app-icon.png         # 图标源图
 └── src-tauri/
     ├── Cargo.toml              # tauri 2 / single-instance / window-vibrancy
+    ├── build.rs                # 构建脚本（icons 变更自动触发资源重嵌入）
     ├── tauri.conf.json         # 窗口、托盘、NSIS 打包配置
     ├── capabilities/default.json
     └── src/main.rs             # 全部 Rust 后端逻辑
@@ -89,12 +93,14 @@ npm run build:portable
 - 关闭窗口 = 最小化到托盘（右下角图标）；托盘右键「退出应用」= 真正退出并强杀 dsh 进程
 - 若 3080 已被占用（比如 Harness 已在别处运行），顶栏状态点显示为琥珀色并直接加载
   现有实例，不会重复启动
+- 顶栏右侧全屏按钮：一键进入/退出全屏；全屏时顶栏自动隐藏，鼠标移到屏幕顶部边缘
+  即滑出（可随时操作或退出全屏）
 
 ## 内存说明
 
-实测（Windows 11，`WorkingSet64`，含共享内存页面，偏保守）：
+实测（Windows 11，工作集口径含共享内存页面，偏保守）：
 
-- **壳本体（Rust 主进程）**：约 68 MB（私有内存约 30–40 MB）
+- **壳本体（Rust 主进程）**：工作集约 68 MB，私有内存约 41 MB
 - **WebView2 基础进程**（browser/GPU/network/utility，WebView2 体系固有成本）：约 300 MB 工作集
 - **内嵌 Harness UI 的渲染进程**：约 130–200 MB（Harness Web UI 本身是重型 React 应用）
 
