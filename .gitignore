@@ -1,0 +1,15 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+.npm-cache/
+.cargo-home/
+*.log
+
+# 构建产物
+/*.exe
+
+# 从 deepseek-whale-girl-icon 仓库下载的原始素材（可用 scripts/fetch-icon.mjs 重新下载）
+assets/improved-1.png
+assets/whale-girl-transparent.png
+assets/DeepSeekHarness-WhaleGirl.ico
