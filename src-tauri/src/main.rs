@@ -73,15 +73,71 @@ impl Default for DevtoolsConfig {
     }
 }
 
+/// 主题模式：跟随系统 / 浅色 / 深色。
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "lowercase")]
+enum ThemeMode {
+    System,
+    Light,
+    Dark,
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        Self::System
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, rename_all = "camelCase")]
 struct ThemeConfig {
-    dark: bool,
+    mode: ThemeMode,
 }
 
 impl Default for ThemeConfig {
     fn default() -> Self {
-        Self { dark: true }
+        Self { mode: ThemeMode::default() }
+    }
+}
+
+/// 读取 Windows 系统深色模式（HKCU\...\Themes\Personalize\AppsUseLightTheme）。
+fn system_dark() -> bool {
+    let mut cmd = Command::new("reg");
+    cmd.args([
+        "query",
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        "/v",
+        "AppsUseLightTheme",
+    ]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let light = cmd
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .find_map(|l| l.split_whitespace().last().map(|s| s.to_string()))
+        })
+        .map(|v| v == "0x1")
+        .unwrap_or(true); // 读取失败时按浅色处理
+    !light
+}
+
+/// 按主题模式解析最终深浅（启动时应用 Mica 用）。
+fn resolve_theme_dark(mode: &ThemeMode) -> bool {
+    match mode {
+        ThemeMode::Dark => true,
+        ThemeMode::Light => false,
+        ThemeMode::System => system_dark(),
+    }
+}
+
+fn theme_mode_str(mode: &ThemeMode) -> String {
+    match mode {
+        ThemeMode::System => "system".into(),
+        ThemeMode::Light => "light".into(),
+        ThemeMode::Dark => "dark".into(),
     }
 }
 
@@ -178,7 +234,7 @@ struct AppState {
     /// 本应用派生的 dsh 进程启动时刻（用于前端展示运行时长）。
     started_at: Mutex<Option<SystemTime>>,
     /// 检查更新结果缓存（10 分钟内不重复联网）。
-    update_cache: Mutex<Option<(Instant, Option<UpdateInfo>)>>,
+    update_cache: Mutex<Option<(Instant, Result<UpdateInfo, String>)>>,
 }
 
 /// 托盘「全屏 / 退出全屏」菜单项句柄（文案随主窗口全屏状态切换）。
@@ -497,7 +553,7 @@ struct ConfigInfo {
     web_url: String,
     auto_open_devtools: bool,
     auto_start: bool,
-    theme_dark: bool,
+    theme_mode: String,
     autostart: bool,
 }
 
@@ -510,7 +566,7 @@ fn get_config(state: State<'_, AppState>) -> ConfigInfo {
         web_url: cfg.web_url(),
         auto_open_devtools: cfg.devtools.auto_open,
         auto_start: cfg.service.auto_start,
-        theme_dark: cfg.theme.dark,
+        theme_mode: theme_mode_str(&cfg.theme.mode),
         autostart: cfg.autostart,
     }
 }
@@ -857,7 +913,7 @@ fn run_diagnostics(app: tauri::AppHandle, state: State<'_, AppState>) -> Vec<Dia
         None => items.push(DiagItem {
             check: "dsh".into(),
             ok: false,
-            detail: "PATH 中未找到 dsh，请执行 npm install -g @deepseek/dsh".into(),
+            detail: "PATH 中未找到 dsh，请执行 npm install -g @deepseek-ai/dsh".into(),
         }),
     }
     let port = cfg.web.port;
@@ -924,18 +980,29 @@ fn extract_version(text: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
-    let mut it = v.trim_start_matches('v').split('.');
+/// 解析版本号：返回 (主版本三元组, 是否预发布)。"0.1.0-rc.6" → ((0,1,0), true)。
+fn parse_semver(v: &str) -> Option<((u64, u64, u64), bool)> {
+    let (core, pre) = match v.find('-') {
+        Some(i) => (&v[..i], true),
+        None => (v, false),
+    };
+    let mut it = core.trim_start_matches('v').split('.');
     let a = it.next()?.parse().ok()?;
     let b = it.next().unwrap_or("0").parse().ok()?;
     let c = it.next().unwrap_or("0").parse().ok()?;
-    Some((a, b, c))
+    Some(((a, b, c), pre))
 }
 
-/// 简单 semver 比较（major.minor.patch 数值比较）。
+/// 简单 semver 比较（major.minor.patch；正式版 > 同版本的预发布版）。
 fn semver_gt(a: &str, b: &str) -> bool {
     match (parse_semver(a), parse_semver(b)) {
-        (Some(x), Some(y)) => x > y,
+        (Some((x, prex)), Some((y, prey))) => {
+            if x != y {
+                x > y
+            } else {
+                !prex && prey
+            }
+        }
         _ => false,
     }
 }
@@ -984,26 +1051,27 @@ fn run_cmd_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process:
     child.wait_with_output().ok()
 }
 
-/// 检查 dsh 是否有新版本：npm view @deepseek/dsh version 与本地版本比较。
-/// 失败（离线/无 npm/超时）返回 None，不打扰用户；结果缓存 10 分钟。
-fn check_update_inner() -> Option<UpdateInfo> {
-    let current = dsh_version()?;
+/// 检查 dsh 是否有新版本：npm view @deepseek-ai/dsh version 与本地版本比较。
+/// 失败（离线/无 npm/超时/包不存在）返回 Err，前端展示具体原因；结果缓存 10 分钟。
+fn check_update_inner() -> Result<UpdateInfo, String> {
+    let current = dsh_version().ok_or_else(|| "无法读取本地 dsh 版本".to_string())?;
     let mut cmd = Command::new("npm");
-    cmd.args(["view", "@deepseek/dsh", "version"]);
-    let out = run_cmd_timeout(&mut cmd, Duration::from_secs(8))?;
+    cmd.args(["view", "@deepseek-ai/dsh", "version"]);
+    let out = run_cmd_timeout(&mut cmd, Duration::from_secs(8))
+        .ok_or_else(|| "查询超时（网络可能不可用）".to_string())?;
     if !out.status.success() {
-        return None;
+        return Err("无法获取最新版本（npm 网络异常或包不存在）".into());
     }
     let latest = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if latest.is_empty() {
-        return None;
+        return Err("无法获取最新版本（npm 返回为空）".into());
     }
     let has_update = semver_gt(&latest, &current);
-    Some(UpdateInfo { current, latest, has_update })
+    Ok(UpdateInfo { current, latest, has_update })
 }
 
 #[tauri::command(async)]
-fn check_update(state: State<'_, AppState>) -> Option<UpdateInfo> {
+fn check_update(state: State<'_, AppState>) -> Result<UpdateInfo, String> {
     {
         let cache = state.update_cache.lock().unwrap();
         if let Some((at, res)) = cache.as_ref() {
@@ -1026,7 +1094,7 @@ fn set_config(
     web_port: Option<u16>,
     web_host: Option<String>,
     auto_start: Option<bool>,
-    theme_dark: Option<bool>,
+    theme_mode: Option<String>,
     auto_open_devtools: Option<bool>,
 ) -> Result<(), String> {
     let mut cfg = state.config.lock().unwrap();
@@ -1040,8 +1108,12 @@ fn set_config(
     if let Some(a) = auto_start {
         cfg.service.auto_start = a;
     }
-    if let Some(t) = theme_dark {
-        cfg.theme.dark = t;
+    if let Some(m) = theme_mode {
+        cfg.theme.mode = match m.as_str() {
+            "light" => ThemeMode::Light,
+            "dark" => ThemeMode::Dark,
+            _ => ThemeMode::System,
+        };
     }
     if let Some(d) = auto_open_devtools {
         cfg.devtools.auto_open = d;
@@ -1225,7 +1297,7 @@ fn main() {
             .build()?;
 
             #[cfg(target_os = "windows")]
-            apply_window_effects(&win, setup_cfg.theme.dark);
+            apply_window_effects(&win, resolve_theme_dark(&setup_cfg.theme.mode));
 
             // 按配置决定是否自动打开 DevTools（调试用）
             #[cfg(any(debug_assertions, feature = "devtools"))]

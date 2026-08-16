@@ -80,7 +80,7 @@
       : "未找到 — 请安装 Node.js";
     els.envDsh.textContent = env.dsh
       ? `找到（${env.dsh}）`
-      : "未找到 — 请执行 npm install -g @deepseek/dsh";
+      : "未找到 — 请执行 npm install -g @deepseek-ai/dsh";
   }
 
   // ---------------- 操作行 ----------------
@@ -262,10 +262,6 @@
     els.updateResult.className = "action-hint";
     try {
       const info = await invoke("check_update");
-      if (!info) {
-        els.updateResult.textContent = "无法检查（npm 不可用或离线）";
-        return;
-      }
       if (info.hasUpdate) {
         els.updateResult.textContent = `发现新版本：${info.current} → ${info.latest}`;
         els.updateResult.className = "action-hint warn";
@@ -275,7 +271,8 @@
       }
     } catch (e) {
       console.error("检查更新失败", e);
-      els.updateResult.textContent = "检查失败";
+      els.updateResult.textContent = e?.message || "检查失败";
+      els.updateResult.className = "action-hint";
     }
   };
 
@@ -328,7 +325,6 @@
 
   // ---------------- 事件绑定（P0） ----------------
   els.btnEnter.addEventListener("click", DSH.navigateToHarness);
-  $("btn-copy-url").addEventListener("click", () => copyText(state.webUrl, $("btn-copy-url")));
   $("btn-open-log").addEventListener("click", () => {
     invoke("open_log_folder").catch((e) => console.error("打开日志文件夹失败", e));
   });

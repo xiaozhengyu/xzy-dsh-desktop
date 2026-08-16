@@ -36,10 +36,7 @@
           <div class="card-title">服务</div>
           <div class="kv-grid">
             <div class="kv"><span class="k">状态</span><span id="svc-status" class="v">—</span></div>
-            <div class="kv"><span class="k">地址</span><span class="v">
-              <code id="svc-url">—</code>
-              <button id="btn-copy-url" class="mini-btn" title="复制地址">复制</button>
-            </span></div>
+            <div class="kv"><span class="k">地址</span><span class="v"><code id="svc-url">—</code></span></div>
             <div class="kv"><span class="k">进程 PID</span><span id="svc-pid" class="v">—</span></div>
             <div class="kv"><span class="k">运行时长</span><span id="svc-uptime" class="v">—</span></div>
             <div class="kv"><span class="k">日志</span><span class="v">
@@ -50,12 +47,14 @@
 
         <!-- 环境卡片 -->
         <div class="card env-card">
-          <div class="card-title">环境</div>
+          <div class="card-head">
+            <span class="card-title">环境</span>
+            <button id="btn-recheck-env" class="mini-btn">重新检测</button>
+          </div>
           <div class="kv-grid">
             <div class="kv"><span class="k">Node.js</span><span id="env-node" class="v">检测中…</span></div>
             <div class="kv"><span class="k">dsh</span><span id="env-dsh" class="v">检测中…</span></div>
           </div>
-          <button id="btn-recheck-env" class="mini-btn">重新检测</button>
         </div>
 
         <!-- 操作行 -->

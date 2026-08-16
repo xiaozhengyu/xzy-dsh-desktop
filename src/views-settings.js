@@ -63,10 +63,14 @@
         <div class="settings-section">
           <div class="setting-row">
             <div class="setting-label">
-              <span class="setting-name">深色主题</span>
-              <span class="setting-desc">控制台与设置页的深浅配色（Harness 界面不受影响）</span>
+              <span class="setting-name">主题</span>
+              <span class="setting-desc">界面配色</span>
             </div>
-            <label class="switch"><input id="set-theme" type="checkbox" /><span class="track"></span></label>
+            <div class="setting-control theme-radio">
+              <label><input type="radio" name="theme-mode" value="light" /> 浅色</label>
+              <label><input type="radio" name="theme-mode" value="dark" /> 深色</label>
+              <label><input type="radio" name="theme-mode" value="system" /> 跟随系统</label>
+            </div>
           </div>
         </div>
       </div>
@@ -151,17 +155,17 @@
       }
     });
 
-    $("set-theme").addEventListener("change", async (e) => {
-      const dark = e.target.checked;
-      document.body.classList.toggle("light", !dark);
-      try {
-        await invoke("set_config", { themeDark: dark });
-        await invoke("apply_theme", { dark });
-      } catch (err) {
-        alert("设置失败：" + (err?.message || String(err)));
-        document.body.classList.toggle("light", dark);
-        e.target.checked = !dark;
-      }
+    // 外观：浅色 / 深色 / 跟随系统
+    document.querySelectorAll('input[name="theme-mode"]').forEach((radio) => {
+      radio.addEventListener("change", async () => {
+        if (!radio.checked) return;
+        try {
+          await invoke("set_config", { themeMode: radio.value });
+          await DSH.applyThemeAll();
+        } catch (err) {
+          alert("设置失败：" + (err?.message || String(err)));
+        }
+      });
     });
 
     $("set-devtools").addEventListener("change", async (e) => {
@@ -185,9 +189,9 @@
     $("set-host").value = cfg.webHost ?? "127.0.0.1";
     $("set-autostart").checked = !!cfg.autostart;
     $("set-autostart-service").checked = !!cfg.autoStart;
-    $("set-theme").checked = cfg.themeDark !== false;
+    const modeRadio = document.querySelector(`input[name="theme-mode"][value="${cfg.themeMode || "system"}"]`);
+    if (modeRadio) modeRadio.checked = true;
     $("set-devtools").checked = !!cfg.autoOpenDevtools;
-    document.body.classList.toggle("light", cfg.themeDark === false);
 
     $("about-version").textContent = await DSH.getAppVersion();
     try {

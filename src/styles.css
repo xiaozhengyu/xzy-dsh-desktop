@@ -164,6 +164,12 @@ body.light { background: #eef0f3; }
   margin-bottom: 10px;
   text-transform: uppercase;
 }
+/* 卡片头部行（标题 + 右侧操作按钮） */
+.card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.card-head .card-title { margin-bottom: 0; }
 
 .kv-grid {
   display: grid;
@@ -367,6 +373,27 @@ body.light { background: #eef0f3; }
   transition: opacity 0.3s;
 }
 .setting-saved.show { opacity: 1; }
+
+/* 外观三选（浅色 / 深色 / 跟随系统） */
+.theme-radio { display: flex; gap: 4px; }
+.theme-radio label {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 10px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg-elev);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.theme-radio label:hover { color: var(--text); }
+.theme-radio label:has(input:checked) {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(76, 194, 255, 0.1);
+}
+.theme-radio input { accent-color: var(--accent); cursor: pointer; }
 
 .about-block { font-size: 12.5px; color: var(--text-dim); display: flex; flex-direction: column; gap: 6px; }
 .about-block code {

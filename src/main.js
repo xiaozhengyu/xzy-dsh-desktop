@@ -124,7 +124,7 @@
         if (!env.dsh) missing.push("全局 dsh");
         DSH.showBanner(
           `缺少运行环境：${missing.join("、")}`,
-          "npm install -g @deepseek/dsh",
+          "npm install -g @deepseek-ai/dsh",
           { retry: () => DSH.refreshEnv(true) }
         );
       } else {
@@ -211,7 +211,7 @@
       if (code === "NodeMissing") {
         DSH.showBanner("未检测到系统 Node.js，请先安装：", "https://nodejs.org/", { retry: DSH.refreshEnv });
       } else if (code === "DshMissing") {
-        DSH.showBanner("未检测到全局 dsh 命令，请安装：", "npm install -g @deepseek/dsh", { retry: DSH.refreshEnv });
+        DSH.showBanner("未检测到全局 dsh 命令，请安装：", "npm install -g @deepseek-ai/dsh", { retry: DSH.refreshEnv });
       } else {
         DSH.showBanner("服务启动失败：" + msg, undefined, { retry: DSH.startService });
       }
@@ -264,6 +264,39 @@
     if (typeof DSH.renderConsole === "function") DSH.renderConsole();
   };
 
+  // ---------------- 主题（浅色 / 深色 / 跟随系统） ----------------
+  function systemDark() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  }
+  function resolveDark() {
+    const mode = (state.config && state.config.themeMode) || "system";
+    if (mode === "dark") return true;
+    if (mode === "light") return false;
+    return systemDark();
+  }
+  // 应用主题到页面（body.light 切 CSS 变量）并同步 Mica
+  DSH.applyThemeAll = async () => {
+    const dark = resolveDark();
+    document.body.classList.toggle("light", !dark);
+    if (DSH.inTauri) {
+      try {
+        await invoke("apply_theme", { dark });
+      } catch (e) {
+        console.error("apply_theme 失败（忽略）", e);
+      }
+    }
+  };
+  // 跟随系统模式：系统深浅变化时实时跟随
+  {
+    const mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+    if (mq && typeof mq.addEventListener === "function") {
+      mq.addEventListener("change", () => {
+        const mode = (state.config && state.config.themeMode) || "system";
+        if (mode === "system") DSH.applyThemeAll();
+      });
+    }
+  }
+
   // ---------------- hash 路由（#/ 控制台 / #/settings 设置） ----------------
   function route() {
     const hash = window.location.hash || "#/";
@@ -289,10 +322,7 @@
 
   (async () => {
     await applyConfig(); // 先从 config.json 读取端口等参数
-    // 按配置应用深浅主题（body.light 切换 CSS 变量）
-    if (state.config) {
-      document.body.classList.toggle("light", state.config.themeDark === false);
-    }
+    await DSH.applyThemeAll(); // 按配置应用深浅主题（含 Mica）
     DSH.refreshEnv();
     refreshStatus();
     startPolling();

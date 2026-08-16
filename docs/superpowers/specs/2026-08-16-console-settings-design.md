@@ -80,12 +80,12 @@
   "web": { "host": "127.0.0.1", "port": 3081 },
   "service": { "startTimeoutSecs": 25, "autoStart": true },
   "devtools": { "autoOpen": false },
-  "theme": { "dark": true },
+  "theme": { "mode": "system" },
   "autostart": false
 }
 ```
 
-- 新增字段 `service.autoStart`（Rust 已有该逻辑，只缺 UI）、`theme.dark`、`autostart`（注册表自启，属壳层状态，写入配置便于 UI 显示）
+- 新增字段 `service.autoStart`（Rust 已有该逻辑，只缺 UI）、`theme.mode`（"system"|"light"|"dark"）、`autostart`（注册表自启，属壳层状态，写入配置便于 UI 显示）
 - 端口/主机保存后**下次启动服务时生效**（dsh web 按旧端口运行中，需停止→启动），保存后 UI 明确提示
 
 ## 4. Rust 命令清单
@@ -102,8 +102,8 @@
 | `restart_service` | — | 同 `start_service` | stop→start；**外部占用（非本应用托管）时拒绝**（错误码 `NotOwned`） |
 | `run_diagnostics` | — | `[{ check, ok, detail }]` | node/dsh 存在与版本、dsh 入口解析、端口占用归属、日志目录可写、配置文件可读、web 连通性 |
 | `check_update` | — | `{ current, latest, hasUpdate } \| null` | `npm view @deepseek/dsh version`（async，超时 8s，失败返回 null 不报错）；结果缓存 10 分钟 |
-| `get_config`（扩展） | — | 增加 `autoStart` / `themeDark` / `autostart` | 前端 `applyConfig` 读取 |
-| `set_config` | `{ webPort?, webHost?, autoStart?, themeDark? }` | `()` | 写回 `config.json`（serde_json 已有依赖） |
+| `get_config`（扩展） | — | 增加 `autoStart` / `themeMode` / `autostart` | 前端 `applyConfig` 读取 |
+| `set_config` | `{ webPort?, webHost?, autoStart?, themeMode?, autoOpenDevtools? }` | `()` | 写回 `config.json`（serde_json 已有依赖） |
 | `set_autostart` | `enabled: bool` | `()` | `HKCU\...\CurrentVersion\Run` 键增删（值为当前 exe 路径），并同步写入 `config.json` 的 `autostart` 镜像（供 UI 开关显示） |
 | `apply_theme` | `dark: bool` | `()` | 重应用 Mica（`window_vibrancy` 深浅参数） |
 | `clean_stale` | — | `{ cleaned: bool, detail }` | `netstat -ano` 找占用端口 PID → `taskkill /PID /T /F` |
@@ -146,7 +146,7 @@
 |---|---|---|
 | 服务 | 端口、主机 | 表单 → `set_config`；提示「下次启动服务时生效」 |
 | 启动 | 开机自启、启动时自动启动服务 | `set_autostart` + `set_config(autoStart)` 开关 |
-| 外观 | 深浅主题 | 开关 → `set_config(themeDark)` + `apply_theme` + 前端 `body` class 切 CSS 变量 |
+| 外观 | 主题三选（浅色/深色/跟随系统） | radio → `set_config(themeMode)` + `apply_theme` + 前端 `body` class 切 CSS 变量；跟随系统用 `prefers-color-scheme` 实时响应 |
 | 调试 | DevTools 自动打开 | `set_config(devtools.autoOpen)` 开关（已有字段，补 UI） |
 | 关于 | 应用版本、图标署名（CC BY-NC-SA 4.0）、配置文件路径、GitHub 链接 | 纯展示 |
 

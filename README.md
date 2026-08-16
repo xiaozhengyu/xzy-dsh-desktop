@@ -45,7 +45,7 @@
   （「控制台」与「设置」会从 Harness 界面导航回本地页；退出时先杀进程树）
 - **单例模式**：`tauri-plugin-single-instance`，重复启动自动唤醒已有窗口
 - **环境引导**：Node.js / dsh 缺失时界面明确提示，并给出
-  `npm install -g @deepseek/dsh` 安装命令；支持一键「重试」无需重启应用
+  `npm install -g @deepseek-ai/dsh` 安装命令；支持一键「重试」无需重启应用
 - **Mica 背景**：`window-vibrancy` 应用 Windows 11 云母材质（失败时自动降级为纯色，
   深浅随设置页主题）
 
@@ -82,7 +82,7 @@ xzy-dsh-desktop/
 1. **Rust 工具链**（MSVC）：`rustup` 安装 stable + `x86_64-pc-windows-msvc`，
    以及 Visual Studio Build Tools（含 C++ 桌面开发组件，本项目已用 VS 18 + MSVC 14.50 验证）
 2. **Node.js**（≥ 18，本项目在 v22 验证）——用于前端静态资源与 Tauri CLI
-3. **全局 dsh**：`npm install -g @deepseek/dsh`
+3. **全局 dsh**：`npm install -g @deepseek-ai/dsh`
 4. **Windows 11**（自带 WebView2 Runtime）
 
 构建：
@@ -168,7 +168,7 @@ dsh 服务本身是独立 Node 进程，另计约 60–100 MB（不含在壳内�
   "web": { "host": "127.0.0.1", "port": 3081 },
   "service": { "startTimeoutSecs": 25, "autoStart": true },
   "devtools": { "autoOpen": false },
-  "theme": { "dark": true },
+  "theme": { "mode": "system" },
   "autostart": false
 }
 ```
@@ -178,7 +178,7 @@ dsh 服务本身是独立 Node 进程，另计约 60–100 MB（不含在壳内�
 - `service.startTimeoutSecs`：服务启动等待上限（秒）
 - `service.autoStart`：启动应用时自动拉起服务（设置页「启动时自动启动服务」）
 - `devtools.autoOpen`：调试用，启动时自动打开开发者工具
-- `theme.dark`：控制台/设置页深浅主题
+- `theme.mode`：界面主题（`"system"` 跟随系统 / `"light"` 浅色 / `"dark"` 深色）
 - `autostart`：开机自启状态（注册表 Run 键的镜像，仅展示用）
 
 ## 已知边界
