@@ -646,14 +646,30 @@ fn start_service(
 }
 
 #[tauri::command(async)]
-fn stop_service(state: State<'_, AppState>) -> Result<(), String> {
+fn stop_service(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let child = state.child.lock().unwrap().take();
     if let Some(mut c) = child {
         kill_tree(c.id());
         let _ = c.wait();
     }
     *state.started_at.lock().unwrap() = None;
+    append_log_line(&app, "[dsh-desktop] --- normal shutdown ---");
     Ok(())
+}
+
+/// 往 dsh-web.log 追加一行（正常退出标记用）。
+fn append_log_line(app: &tauri::AppHandle, line: &str) {
+    use std::io::Write;
+    if let Ok(dir) = app.path().app_log_dir() {
+        let _ = fs::create_dir_all(&dir);
+        if let Ok(mut f) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("dsh-web.log"))
+        {
+            let _ = writeln!(f, "{line}");
+        }
+    }
 }
 
 // ---------------------------------------------------------------- 控制台信息 / 日志
@@ -1050,6 +1066,86 @@ fn get_config_path() -> Option<String> {
     AppConfig::config_path().map(|p| p.to_string_lossy().into_owned())
 }
 
+// ---------------------------------------------------------------- P3：异常退出兜底
+
+/// 异常退出检测：服务未运行、日志非空、且尾部无正常退出标记 → 判定上次异常退出。
+#[tauri::command]
+fn check_abnormal_exit(app: tauri::AppHandle, state: State<'_, AppState>) -> bool {
+    let cfg = state.config.lock().unwrap().clone();
+    if port_in_use(cfg.web.port) {
+        return false;
+    }
+    let Some(dir) = app.path().app_log_dir().ok() else {
+        return false;
+    };
+    let Ok(content) = fs::read_to_string(dir.join("dsh-web.log")) else {
+        return false;
+    };
+    if content.trim().is_empty() {
+        return false;
+    }
+    !content.contains("--- normal shutdown ---")
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CleanResult {
+    cleaned: bool,
+    detail: String,
+}
+
+/// 一键清理残留进程：netstat 定位占用端口的监听 PID → taskkill /T /F。
+#[tauri::command]
+fn clean_stale(state: State<'_, AppState>) -> Result<CleanResult, String> {
+    let cfg = state.config.lock().unwrap().clone();
+    let port = cfg.web.port;
+    if state.child.lock().unwrap().as_ref().is_some() {
+        return Err("服务由本应用托管，无需清理".into());
+    }
+    if !port_in_use(port) {
+        return Ok(CleanResult { cleaned: false, detail: "未发现端口占用，无残留进程".into() });
+    }
+    let mut cmd = Command::new("netstat");
+    cmd.args(["-ano", "-p", "TCP"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let out = cmd.output().map_err(|e| format!("netstat 执行失败: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut pids: Vec<u32> = Vec::new();
+    let suffix = format!(":{port}");
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        // 格式: Proto  Local Address  Foreign Address  State  PID
+        if parts.len() >= 5
+            && parts[1].ends_with(&suffix)
+            && parts[3] == "LISTENING"
+        {
+            if let Ok(pid) = parts[4].parse::<u32>() {
+                pids.push(pid);
+            }
+        }
+    }
+    if pids.is_empty() {
+        return Ok(CleanResult {
+            cleaned: false,
+            detail: "端口被占用但未定位到监听进程（可能是非 TCP 监听或权限受限）".into(),
+        });
+    }
+    for pid in &pids {
+        kill_tree(*pid);
+    }
+    std::thread::sleep(Duration::from_millis(600));
+    if port_in_use(port) {
+        Ok(CleanResult {
+            cleaned: false,
+            detail: "已结束进程但端口仍被占用（可能还有其他进程绑定同一端口）".into(),
+        })
+    } else {
+        let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+        Ok(CleanResult { cleaned: true, detail: format!("已清理残留进程: {list}") })
+    }
+}
+
 // ---------------------------------------------------------------- 入口
 
 fn main() {
@@ -1085,7 +1181,9 @@ fn main() {
             set_config,
             set_autostart,
             apply_theme,
-            get_config_path
+            get_config_path,
+            check_abnormal_exit,
+            clean_stale
         ])
         .setup(move |app| {
             // 主窗口在 Rust 侧创建：需要挂载 initialization_script，
@@ -1153,8 +1251,10 @@ fn main() {
         .expect("构建 Tauri 应用失败");
 
     app.run(|app_handle, event| {
-        // 退出时强杀由本应用派生的 dsh 进程树，避免端口占用残留
+        // 退出时写正常退出标记并强杀由本应用派生的 dsh 进程树，避免端口占用残留。
+        // 异常强杀（任务管理器）不会经过这里 → 日志尾部无标记，前端据此提示上次异常退出。
         if let RunEvent::Exit = event {
+            append_log_line(app_handle, "[dsh-desktop] --- normal shutdown ---");
             if let Some(mut child) = app_handle.state::<AppState>().child.lock().unwrap().take() {
                 kill_tree(child.id());
                 let _ = child.wait();

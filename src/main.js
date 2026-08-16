@@ -27,6 +27,7 @@
     bannerText: $("banner-text"),
     bannerCmd: $("banner-cmd"),
     btnRetry: $("btn-retry"),
+    btnAction: $("btn-banner-action"),
     viewConsole: $("view-console"),
     viewSettings: $("view-settings"),
     statusDot: $("status-dot"),
@@ -43,6 +44,9 @@
     els.bannerCmd.classList.toggle("hidden", !cmdText);
     els.btnRetry.classList.toggle("hidden", !opts.retry);
     els.btnRetry.onclick = opts.retry || null;
+    els.btnAction.classList.toggle("hidden", !opts.action);
+    els.btnAction.textContent = opts.action?.label || "";
+    els.btnAction.onclick = opts.action?.fn || null;
   };
   DSH.hideBanner = () => els.banner.classList.add("hidden");
 

@@ -293,6 +293,39 @@
     els.diagPanel.classList.add("hidden");
   });
 
+  // ---------------- P3：异常退出检测与残留清理 ----------------
+  let abnormalChecked = false;
+
+  async function checkAbnormalExit() {
+    if (!DSH.inTauri || abnormalChecked) return;
+    abnormalChecked = true;
+    try {
+      const abnormal = await invoke("check_abnormal_exit");
+      if (!abnormal) return;
+      DSH.showBanner("检测到上次可能异常退出，dsh 进程可能残留", undefined, {
+        info: true,
+        action: {
+          label: "一键清理残留进程",
+          fn: async () => {
+            try {
+              const res = await invoke("clean_stale");
+              if (res.cleaned) {
+                DSH.hideBanner();
+              } else {
+                DSH.showBanner(res.detail, undefined, { info: true });
+              }
+              await DSH.refreshStatus();
+            } catch (e) {
+              DSH.showBanner("清理失败：" + (e?.message || String(e)));
+            }
+          },
+        },
+      });
+    } catch (e) {
+      /* 检测失败静默 */
+    }
+  }
+
   // ---------------- 事件绑定（P0） ----------------
   els.btnEnter.addEventListener("click", DSH.navigateToHarness);
   $("btn-copy-url").addEventListener("click", () => copyText(state.webUrl, $("btn-copy-url")));
@@ -336,5 +369,6 @@
 
   DSH.onConsoleVisible = () => {
     startLogTimer();
+    checkAbnormalExit();
   };
 })();
