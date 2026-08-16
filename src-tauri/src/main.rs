@@ -404,8 +404,8 @@ const SHORTCUT_SCRIPT: &str = r#"(() => {
 })();"#;
 
 #[cfg(target_os = "windows")]
-fn apply_window_effects(window: &tauri::WebviewWindow) {
-    match window_vibrancy::apply_mica(window, Some(true)) {
+fn apply_window_effects(window: &tauri::WebviewWindow, dark: bool) {
+    match window_vibrancy::apply_mica(window, Some(dark)) {
         Ok(()) => {}
         Err(e) => eprintln!("[dsh-desktop] Mica 背景应用失败（非致命）: {e}"),
     }
@@ -963,15 +963,34 @@ fn dsh_version() -> Option<String> {
     extract_version(&String::from_utf8_lossy(&out.stdout))
 }
 
+/// 带超时的子进程执行（捕获 stdout/stderr；超时则杀掉返回 None）。
+fn run_cmd_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process::Output> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let mut child = cmd.spawn().ok()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    child.wait_with_output().ok()
+}
+
 /// 检查 dsh 是否有新版本：npm view @deepseek/dsh version 与本地版本比较。
-/// 失败（离线/无 npm）返回 None，不打扰用户；结果缓存 10 分钟。
+/// 失败（离线/无 npm/超时）返回 None，不打扰用户；结果缓存 10 分钟。
 fn check_update_inner() -> Option<UpdateInfo> {
     let current = dsh_version()?;
     let mut cmd = Command::new("npm");
     cmd.args(["view", "@deepseek/dsh", "version"]);
-    #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    let out = cmd.output().ok()?;
+    let out = run_cmd_timeout(&mut cmd, Duration::from_secs(8))?;
     if !out.status.success() {
         return None;
     }
@@ -1206,7 +1225,7 @@ fn main() {
             .build()?;
 
             #[cfg(target_os = "windows")]
-            apply_window_effects(&win);
+            apply_window_effects(&win, setup_cfg.theme.dark);
 
             // 按配置决定是否自动打开 DevTools（调试用）
             #[cfg(any(debug_assertions, feature = "devtools"))]

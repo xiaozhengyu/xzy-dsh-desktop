@@ -289,6 +289,10 @@
 
   (async () => {
     await applyConfig(); // 先从 config.json 读取端口等参数
+    // 按配置应用深浅主题（body.light 切换 CSS 变量）
+    if (state.config) {
+      document.body.classList.toggle("light", state.config.themeDark === false);
+    }
     DSH.refreshEnv();
     refreshStatus();
     startPolling();
