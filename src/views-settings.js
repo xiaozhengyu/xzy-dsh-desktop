@@ -161,6 +161,7 @@
         if (!radio.checked) return;
         try {
           await invoke("set_config", { themeMode: radio.value });
+          await DSH.reloadConfig(); // 刷新共享配置，否则 applyThemeAll 读到的还是旧 mode
           await DSH.applyThemeAll();
         } catch (err) {
           alert("设置失败：" + (err?.message || String(err)));

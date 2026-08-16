@@ -7,7 +7,6 @@
   const $ = (id) => document.getElementById(id);
 
   const els = {
-    svcStatus: $("svc-status"),
     svcUrl: $("svc-url"),
     svcPid: $("svc-pid"),
     svcUptime: $("svc-uptime"),
@@ -16,8 +15,6 @@
     btnEnter: $("btn-enter-harness"),
     btnRestart: $("btn-restart"),
     btnDiag: $("btn-diagnostics"),
-    btnUpdate: $("btn-update"),
-    updateResult: $("update-result"),
     logView: $("log-view"),
     logFilter: $("log-filter"),
     logToBottom: $("log-scroll-bottom"),
@@ -48,9 +45,6 @@
 
   function renderServiceCard() {
     const info = DSH.serviceInfo || {};
-    els.svcStatus.textContent = state.portInUse
-      ? state.owned ? "运行中（本应用托管）" : "运行中（外部实例）"
-      : "已停止";
     els.svcUrl.textContent = state.webUrl || "—";
     els.svcPid.textContent = info.pid ? String(info.pid) : "—";
     els.svcUptime.textContent = state.owned && info.startedAtMs
@@ -75,11 +69,9 @@
       els.envDsh.textContent = "检测中…";
       return;
     }
-    els.envNode.textContent = env.node
-      ? `找到（${env.node}）`
-      : "未找到 — 请安装 Node.js";
+    els.envNode.textContent = env.node ? env.node : "未找到 — 请安装 Node.js";
     els.envDsh.textContent = env.dsh
-      ? `找到（${env.dsh}）`
+      ? env.dsh
       : "未找到 — 请执行 npm install -g @deepseek-ai/dsh";
   }
 
@@ -256,29 +248,8 @@
     }
   };
 
-  DSH.checkUpdate = async () => {
-    if (!DSH.inTauri) return;
-    els.updateResult.textContent = "检查中…";
-    els.updateResult.className = "action-hint";
-    try {
-      const info = await invoke("check_update");
-      if (info.hasUpdate) {
-        els.updateResult.textContent = `发现新版本：${info.current} → ${info.latest}`;
-        els.updateResult.className = "action-hint warn";
-      } else {
-        els.updateResult.textContent = `已是最新（${info.current}）`;
-        els.updateResult.className = "action-hint ok";
-      }
-    } catch (e) {
-      console.error("检查更新失败", e);
-      els.updateResult.textContent = e?.message || "检查失败";
-      els.updateResult.className = "action-hint";
-    }
-  };
-
   els.btnRestart.addEventListener("click", () => DSH.restartService());
   els.btnDiag.addEventListener("click", () => DSH.runDiagnostics());
-  els.btnUpdate.addEventListener("click", () => DSH.checkUpdate());
   $("btn-copy-diag").addEventListener("click", () => {
     if (!DSH.lastDiag) return;
     const text = DSH.lastDiag

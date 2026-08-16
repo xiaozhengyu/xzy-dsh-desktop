@@ -25,6 +25,7 @@
           <span id="status-text">服务已停止</span>
         </div>
         <div class="head-actions">
+          <button id="btn-enter-harness" class="btn btn-primary hidden">进入 Harness 界面</button>
           <button id="btn-toggle" class="btn-toggle start" title="启动 / 停止 dsh web 服务">启动服务</button>
           <a id="btn-settings" class="head-link" href="#/settings" title="设置">设置</a>
         </div>
@@ -35,13 +36,9 @@
         <div class="card service-card">
           <div class="card-title">服务</div>
           <div class="kv-grid">
-            <div class="kv"><span class="k">状态</span><span id="svc-status" class="v">—</span></div>
             <div class="kv"><span class="k">地址</span><span class="v"><code id="svc-url">—</code></span></div>
             <div class="kv"><span class="k">进程 PID</span><span id="svc-pid" class="v">—</span></div>
             <div class="kv"><span class="k">运行时长</span><span id="svc-uptime" class="v">—</span></div>
-            <div class="kv"><span class="k">日志</span><span class="v">
-              <button id="btn-open-log" class="mini-btn">打开日志文件夹</button>
-            </span></div>
           </div>
         </div>
 
@@ -61,11 +58,8 @@
         <div class="card actions-card">
           <div class="card-title">操作</div>
           <div class="actions-row">
-            <button id="btn-enter-harness" class="btn btn-primary hidden">进入 Harness 界面</button>
             <button id="btn-restart" class="btn hidden">重启服务</button>
             <button id="btn-diagnostics" class="btn">自检诊断</button>
-            <button id="btn-update" class="btn">检查更新</button>
-            <span id="update-result" class="action-hint"></span>
           </div>
         </div>
 
@@ -83,6 +77,7 @@
         <div class="card log-card">
           <div class="log-toolbar">
             <div class="card-title">日志</div>
+            <button id="btn-open-log" class="mini-btn" title="在资源管理器中定位日志文件">打开日志文件夹</button>
             <input id="log-filter" class="log-filter" placeholder="过滤关键字…" spellcheck="false" />
             <button id="btn-clear-log" class="mini-btn" title="清空日志文件">清空</button>
           </div>

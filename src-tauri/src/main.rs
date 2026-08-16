@@ -233,8 +233,6 @@ struct AppState {
     config: Mutex<AppConfig>,
     /// 本应用派生的 dsh 进程启动时刻（用于前端展示运行时长）。
     started_at: Mutex<Option<SystemTime>>,
-    /// 检查更新结果缓存（10 分钟内不重复联网）。
-    update_cache: Mutex<Option<(Instant, Result<UpdateInfo, String>)>>,
 }
 
 /// 托盘「全屏 / 退出全屏」菜单项句柄（文案随主窗口全屏状态切换）。
@@ -272,15 +270,6 @@ enum StartError {
     DshMissing,
     SpawnFailed(String),
     NotReady(String),
-}
-
-/// dsh 更新检查结果（P1）。
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateInfo {
-    current: String,
-    latest: String,
-    has_update: bool,
 }
 
 // ---------------------------------------------------------------- 系统工具
@@ -969,122 +958,6 @@ fn run_diagnostics(app: tauri::AppHandle, state: State<'_, AppState>) -> Vec<Dia
     items
 }
 
-/// 解析字符串中的首个 x.y.z 形态版本号（宽松匹配，容忍 "v1.2.3" / "dsh 0.5.0" 等）。
-fn extract_version(text: &str) -> Option<String> {
-    text.split(|c: char| !c.is_ascii_digit() && c != '.')
-        .find(|p| {
-            let parts: Vec<&str> = p.split('.').collect();
-            parts.len() >= 2
-                && parts.iter().all(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit()))
-        })
-        .map(|s| s.to_string())
-}
-
-/// 解析版本号：返回 (主版本三元组, 是否预发布)。"0.1.0-rc.6" → ((0,1,0), true)。
-fn parse_semver(v: &str) -> Option<((u64, u64, u64), bool)> {
-    let (core, pre) = match v.find('-') {
-        Some(i) => (&v[..i], true),
-        None => (v, false),
-    };
-    let mut it = core.trim_start_matches('v').split('.');
-    let a = it.next()?.parse().ok()?;
-    let b = it.next().unwrap_or("0").parse().ok()?;
-    let c = it.next().unwrap_or("0").parse().ok()?;
-    Some(((a, b, c), pre))
-}
-
-/// 简单 semver 比较（major.minor.patch；正式版 > 同版本的预发布版）。
-fn semver_gt(a: &str, b: &str) -> bool {
-    match (parse_semver(a), parse_semver(b)) {
-        (Some((x, prex)), Some((y, prey))) => {
-            if x != y {
-                x > y
-            } else {
-                !prex && prey
-            }
-        }
-        _ => false,
-    }
-}
-
-/// 本地 dsh 版本（优先 node <入口> --version，回退 cmd /C dsh --version）。
-fn dsh_version() -> Option<String> {
-    let node = where_find("node")?;
-    let shim = where_find("dsh")?;
-    let mut cmd = match resolve_dsh_entry(&shim) {
-        Some(entry) => {
-            let mut c = Command::new(&node);
-            c.arg(&entry);
-            c
-        }
-        None => {
-            let mut c = Command::new("cmd");
-            c.args(["/C", "dsh"]);
-            c
-        }
-    };
-    cmd.arg("--version");
-    #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    let out = cmd.output().ok()?;
-    extract_version(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// 带超时的子进程执行（捕获 stdout/stderr；超时则杀掉返回 None）。
-fn run_cmd_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process::Output> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    let mut child = cmd.spawn().ok()?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Ok(Some(_)) = child.try_wait() {
-            break;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(150));
-    }
-    child.wait_with_output().ok()
-}
-
-/// 检查 dsh 是否有新版本：npm view @deepseek-ai/dsh version 与本地版本比较。
-/// 失败（离线/无 npm/超时/包不存在）返回 Err，前端展示具体原因；结果缓存 10 分钟。
-fn check_update_inner() -> Result<UpdateInfo, String> {
-    let current = dsh_version().ok_or_else(|| "无法读取本地 dsh 版本".to_string())?;
-    let mut cmd = Command::new("npm");
-    cmd.args(["view", "@deepseek-ai/dsh", "version"]);
-    let out = run_cmd_timeout(&mut cmd, Duration::from_secs(8))
-        .ok_or_else(|| "查询超时（网络可能不可用）".to_string())?;
-    if !out.status.success() {
-        return Err("无法获取最新版本（npm 网络异常或包不存在）".into());
-    }
-    let latest = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if latest.is_empty() {
-        return Err("无法获取最新版本（npm 返回为空）".into());
-    }
-    let has_update = semver_gt(&latest, &current);
-    Ok(UpdateInfo { current, latest, has_update })
-}
-
-#[tauri::command(async)]
-fn check_update(state: State<'_, AppState>) -> Result<UpdateInfo, String> {
-    {
-        let cache = state.update_cache.lock().unwrap();
-        if let Some((at, res)) = cache.as_ref() {
-            if at.elapsed() < Duration::from_secs(600) {
-                return res.clone();
-            }
-        }
-    }
-    let result = check_update_inner();
-    *state.update_cache.lock().unwrap() = Some((Instant::now(), result.clone()));
-    result
-}
-
 // ---------------------------------------------------------------- P2：设置
 
 /// 修改配置（写回 config.json，下次启动服务生效的项由 UI 文案提示）。
@@ -1254,7 +1127,6 @@ fn main() {
             env_info: Mutex::new(None),
             config: Mutex::new(cfg.clone()),
             started_at: Mutex::new(None),
-            update_cache: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_env_info,
@@ -1268,7 +1140,6 @@ fn main() {
             stop_service,
             restart_service,
             run_diagnostics,
-            check_update,
             set_config,
             set_autostart,
             apply_theme,
