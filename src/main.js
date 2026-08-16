@@ -73,7 +73,7 @@
     } else if (portInUse && owned) {
       setStatus("running", "服务运行中", statusDetail());
     } else if (portInUse) {
-      setStatus("external", "服务运行中", statusDetail());
+      setStatus("external", "服务运行中（外部实例）", statusDetail());
     } else {
       setStatus("stopped", "服务已停止", statusDetail());
     }

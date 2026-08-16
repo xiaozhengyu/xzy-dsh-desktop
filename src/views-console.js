@@ -261,34 +261,45 @@
     els.diagPanel.classList.add("hidden");
   });
 
-  // ---------------- P3：异常退出检测与残留清理 ----------------
-  let abnormalChecked = false;
+  // ---------------- P3：残留检测（异常退出 / 外部占用）与一键清理 ----------------
+  let staleChecked = false;
 
-  async function checkAbnormalExit() {
-    if (!DSH.inTauri || abnormalChecked) return;
-    abnormalChecked = true;
+  function cleanAction() {
+    return {
+      label: "一键清理残留进程",
+      fn: async () => {
+        try {
+          const res = await invoke("clean_stale");
+          if (res.cleaned) {
+            DSH.hideBanner();
+          } else {
+            DSH.showBanner(res.detail, undefined, { info: true });
+          }
+          await DSH.refreshStatus();
+        } catch (e) {
+          DSH.showBanner("清理失败：" + (e?.message || String(e)));
+        }
+      },
+    };
+  }
+
+  async function checkStale() {
+    if (!DSH.inTauri || staleChecked) return;
+    staleChecked = true;
     try {
-      const abnormal = await invoke("check_abnormal_exit");
-      if (!abnormal) return;
-      DSH.showBanner("检测到上次可能异常退出，dsh 进程可能残留", undefined, {
-        info: true,
-        action: {
-          label: "一键清理残留进程",
-          fn: async () => {
-            try {
-              const res = await invoke("clean_stale");
-              if (res.cleaned) {
-                DSH.hideBanner();
-              } else {
-                DSH.showBanner(res.detail, undefined, { info: true });
-              }
-              await DSH.refreshStatus();
-            } catch (e) {
-              DSH.showBanner("清理失败：" + (e?.message || String(e)));
-            }
-          },
-        },
-      });
+      const info = await invoke("check_stale_info");
+      if (info.abnormalExit) {
+        DSH.showBanner("检测到上次可能异常退出，dsh 进程可能残留", undefined, {
+          info: true,
+          action: cleanAction(),
+        });
+      } else if (info.externalOccupied) {
+        const pidTxt = info.portPid ? `（PID ${info.portPid}）` : "";
+        DSH.showBanner(`端口 ${state.webPort} 被外部进程占用${pidTxt}，可能为残留实例`, undefined, {
+          info: true,
+          action: cleanAction(),
+        });
+      }
     } catch (e) {
       /* 检测失败静默 */
     }
@@ -336,6 +347,6 @@
 
   DSH.onConsoleVisible = () => {
     startLogTimer();
-    checkAbnormalExit();
+    checkStale();
   };
 })();

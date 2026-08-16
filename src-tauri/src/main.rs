@@ -728,6 +728,7 @@ struct ServiceInfo {
 }
 
 /// 服务详情：PID、启动时刻（epoch 毫秒，供前端计算运行时长）、日志文件路径。
+/// 非托管的外部实例也能通过 netstat 探测到占用 PID。
 #[tauri::command]
 fn get_service_info(app: tauri::AppHandle, state: State<'_, AppState>) -> ServiceInfo {
     let owned = {
@@ -744,8 +745,11 @@ fn get_service_info(app: tauri::AppHandle, state: State<'_, AppState>) -> Servic
             false
         }
     };
+    let port = state.config.lock().unwrap().web.port;
     let pid = if owned {
         state.child.lock().unwrap().as_ref().map(|c| c.id())
+    } else if port_in_use(port) {
+        listening_pids(port).first().copied()
     } else {
         None
     };
@@ -915,11 +919,14 @@ fn run_diagnostics(app: tauri::AppHandle, state: State<'_, AppState>) -> Vec<Dia
             ok: true,
             detail: "由本应用托管（正常运行）".into(),
         },
-        (true, false) => DiagItem {
-            check: format!("端口 {port}"),
-            ok: false,
-            detail: "被外部进程占用——可能是异常强杀残留，可在控制台执行「清理残留」".into(),
-        },
+        (true, false) => {
+            let pid = listening_pids(port).first().copied();
+            let detail = match pid {
+                Some(p) => format!("被外部进程占用（PID {p}）——可能为异常强杀残留，可点击顶部横幅「一键清理残留进程」"),
+                None => "被外部进程占用（未定位到监听 PID）".into(),
+            };
+            DiagItem { check: format!("端口 {port}"), ok: false, detail }
+        }
     });
     match app.path().app_log_dir() {
         Ok(dir) => {
@@ -1032,23 +1039,66 @@ fn get_config_path() -> Option<String> {
 
 // ---------------------------------------------------------------- P3：异常退出兜底
 
-/// 异常退出检测：服务未运行、日志非空、且尾部无正常退出标记 → 判定上次异常退出。
+/// netstat 查找监听指定端口的进程 PID 列表（格式: Proto Local Foreign State PID）。
+fn listening_pids(port: u16) -> Vec<u32> {
+    let mut cmd = Command::new("netstat");
+    cmd.args(["-ano", "-p", "TCP"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let Ok(out) = cmd.output() else { return Vec::new() };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let suffix = format!(":{port}");
+    let mut pids = Vec::new();
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 5 && parts[1].ends_with(&suffix) && parts[3] == "LISTENING" {
+            if let Ok(pid) = parts[4].parse::<u32>() {
+                pids.push(pid);
+            }
+        }
+    }
+    pids
+}
+
+/// 残留状态（控制台加载时探测一次）：上次异常退出 / 端口被外部进程占用。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StaleInfo {
+    /// 服务未运行且日志尾部无正常退出标记（上次异常强杀）。
+    abnormal_exit: bool,
+    /// 端口被非本应用托管的进程占用（可能为残留，也可能是外部正常实例）。
+    external_occupied: bool,
+    /// 外部占用进程的 PID（netstat 探测）。
+    port_pid: Option<u32>,
+}
+
+/// 残留状态检测：区分「异常退出」与「外部占用」两种可清理场景。
 #[tauri::command]
-fn check_abnormal_exit(app: tauri::AppHandle, state: State<'_, AppState>) -> bool {
+fn check_stale_info(app: tauri::AppHandle, state: State<'_, AppState>) -> StaleInfo {
     let cfg = state.config.lock().unwrap().clone();
-    if port_in_use(cfg.web.port) {
-        return false;
+    // 本应用托管运行中 → 无残留问题
+    let owned = state.child.lock().unwrap().as_ref().is_some();
+    if owned {
+        return StaleInfo { abnormal_exit: false, external_occupied: false, port_pid: None };
     }
-    let Some(dir) = app.path().app_log_dir().ok() else {
-        return false;
-    };
-    let Ok(content) = fs::read_to_string(dir.join("dsh-web.log")) else {
-        return false;
-    };
-    if content.trim().is_empty() {
-        return false;
+    let content = app
+        .path()
+        .app_log_dir()
+        .ok()
+        .map(|d| d.join("dsh-web.log"))
+        .and_then(|p| fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    let has_normal_mark = content.contains("--- normal shutdown ---");
+    let log_nonempty = !content.trim().is_empty();
+
+    let occupied = port_in_use(cfg.web.port);
+    StaleInfo {
+        // 服务未运行 + 日志非空 + 无正常退出标记 → 上次异常强杀
+        abnormal_exit: !occupied && log_nonempty && !has_normal_mark,
+        // 外部进程占着端口（且非本应用托管）
+        external_occupied: occupied,
+        port_pid: if occupied { listening_pids(cfg.web.port).first().copied() } else { None },
     }
-    !content.contains("--- normal shutdown ---")
 }
 
 #[derive(Serialize)]
@@ -1069,26 +1119,7 @@ fn clean_stale(state: State<'_, AppState>) -> Result<CleanResult, String> {
     if !port_in_use(port) {
         return Ok(CleanResult { cleaned: false, detail: "未发现端口占用，无残留进程".into() });
     }
-    let mut cmd = Command::new("netstat");
-    cmd.args(["-ano", "-p", "TCP"]);
-    #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    let out = cmd.output().map_err(|e| format!("netstat 执行失败: {e}"))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut pids: Vec<u32> = Vec::new();
-    let suffix = format!(":{port}");
-    for line in text.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        // 格式: Proto  Local Address  Foreign Address  State  PID
-        if parts.len() >= 5
-            && parts[1].ends_with(&suffix)
-            && parts[3] == "LISTENING"
-        {
-            if let Ok(pid) = parts[4].parse::<u32>() {
-                pids.push(pid);
-            }
-        }
-    }
+    let pids = listening_pids(port);
     if pids.is_empty() {
         return Ok(CleanResult {
             cleaned: false,
@@ -1144,7 +1175,7 @@ fn main() {
             set_autostart,
             apply_theme,
             get_config_path,
-            check_abnormal_exit,
+            check_stale_info,
             clean_stale
         ])
         .setup(move |app| {
