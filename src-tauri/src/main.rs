@@ -322,22 +322,63 @@ fn resolve_dsh_entry(shim: &str) -> Option<String> {
     }
 }
 
-/// 检测端口是否被占用（127.0.0.1 / ::1）。
+/// 检测指定 host:port 是否可连接。
+fn port_in_use_at(host: &str, port: u16) -> bool {
+    let text = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let Ok(mut addrs) = text.to_socket_addrs() else {
+        return false;
+    };
+    addrs.any(|a| TcpStream::connect_timeout(&a, Duration::from_millis(250)).is_ok())
+}
+
+/// 检测端口是否被占用（回环地址 127.0.0.1 / ::1）。
 fn port_in_use(port: u16) -> bool {
-    for host in ["127.0.0.1", "::1"] {
-        let text = if host.contains(':') {
-            format!("[{host}]:{port}")
-        } else {
-            format!("{host}:{port}")
-        };
-        let Ok(mut addrs) = text.to_socket_addrs() else {
-            continue;
-        };
-        if addrs.any(|a| TcpStream::connect_timeout(&a, Duration::from_millis(250)).is_ok()) {
-            return true;
-        }
+    port_in_use_at("127.0.0.1", port) || port_in_use_at("::1", port)
+}
+
+/// 按配置的绑定 host 探测端口：
+/// - 通配 host（0.0.0.0 / ::）按回环探测（0.0.0.0 监听涵盖回环）；
+/// - 具体 host 直接探测该地址。
+fn probe_port(cfg: &AppConfig) -> bool {
+    let host = cfg.web.host.trim();
+    if host == "0.0.0.0" || host == "::" || host.is_empty() {
+        port_in_use(cfg.web.port)
+    } else {
+        port_in_use_at(host, cfg.web.port)
     }
-    false
+}
+
+/// 获取进程命令行（PowerShell Get-CimInstance，wmic 在新系统已弃用）。
+fn process_command_line(pid: u32) -> Option<String> {
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &format!("(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CommandLine"),
+    ]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let out = cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// 判断命令行是否属于 dsh web 服务进程（node <dsh 入口> web ... / cmd /C dsh web ...）。
+/// 特征：命令含 dsh 标识 且 含 web 子命令。无法确认时返回 false（宁可不清，不可误杀）。
+fn is_dsh_process(cmdline: &str) -> bool {
+    let lower = cmdline.to_lowercase();
+    let has_dsh_marker =
+        lower.contains("dsh") || lower.contains("@deepseek") || lower.contains("bin.js");
+    has_dsh_marker && lower.contains(" web ")
 }
 
 /// 用 Windows 原生 taskkill 强杀进程树（含子进程），防止端口残留。
@@ -577,7 +618,7 @@ fn get_status(state: State<'_, AppState>) -> StatusInfo {
         }
     }
     StatusInfo {
-        port_in_use: port_in_use(cfg.web.port),
+        port_in_use: probe_port(&cfg),
         owned,
         url: cfg.web_url(),
     }
@@ -598,7 +639,7 @@ fn start_service_inner(
     let dsh_shim = where_find("dsh").ok_or(StartError::DshMissing)?;
 
     // 2) 端口占用检测：已被占用 → 视为已有实例，不重复启动
-    if port_in_use(port) {
+    if probe_port(cfg) {
         return Ok(StartOutcome::AlreadyRunning { url: web_url });
     }
 
@@ -622,6 +663,10 @@ fn start_service_inner(
         }
     };
     cmd.arg("web").arg("--port").arg(port.to_string());
+    // 绑定 host 闭环：配置了非默认 host 时显式传给 dsh web
+    if cfg.web.host != "127.0.0.1" && !cfg.web.host.is_empty() {
+        cmd.arg("--host").arg(&cfg.web.host);
+    }
 
     // 不弹出控制台窗口：GUI 子系统应用 spawn 控制台子系统进程（node/cmd）时，
     // Windows 默认会新建一个终端窗口；CREATE_NO_WINDOW 禁止之，输出仍写入日志文件。
@@ -655,7 +700,7 @@ fn start_service_inner(
     // 4) 等待配置端口就绪
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if port_in_use(port) {
+        if probe_port(cfg) {
             *state.started_at.lock().unwrap() = Some(SystemTime::now());
             return Ok(StartOutcome::Started { url: web_url });
         }
@@ -745,11 +790,11 @@ fn get_service_info(app: tauri::AppHandle, state: State<'_, AppState>) -> Servic
             false
         }
     };
-    let port = state.config.lock().unwrap().web.port;
+    let cfg = state.config.lock().unwrap().clone();
     let pid = if owned {
         state.child.lock().unwrap().as_ref().map(|c| c.id())
-    } else if port_in_use(port) {
-        listening_pids(port).first().copied()
+    } else if probe_port(&cfg) {
+        listening_pids(cfg.web.port).first().copied()
     } else {
         None
     };
@@ -910,7 +955,7 @@ fn run_diagnostics(app: tauri::AppHandle, state: State<'_, AppState>) -> Vec<Dia
         }),
     }
     let port = cfg.web.port;
-    let occupied = port_in_use(port);
+    let occupied = probe_port(&cfg);
     let owned = state.child.lock().unwrap().as_ref().is_some();
     items.push(match (occupied, owned) {
         (false, _) => DiagItem { check: format!("端口 {port}"), ok: true, detail: "空闲".into() },
@@ -920,9 +965,16 @@ fn run_diagnostics(app: tauri::AppHandle, state: State<'_, AppState>) -> Vec<Dia
             detail: "由本应用托管（正常运行）".into(),
         },
         (true, false) => {
-            let pid = listening_pids(port).first().copied();
-            let detail = match pid {
-                Some(p) => format!("被外部进程占用（PID {p}）——可能为异常强杀残留，可点击顶部横幅「一键清理残留进程」"),
+            let detail = match listening_pids(port).first().copied() {
+                Some(p) => {
+                    let identity = process_command_line(p)
+                        .map(|cl| {
+                            let trimmed: String = cl.chars().take(90).collect();
+                            format!("；命令行：{trimmed}…")
+                        })
+                        .unwrap_or_default();
+                    format!("被外部进程占用（PID {p}{identity}）——若为 dsh 残留可清理，非 dsh 进程会拒绝终止")
+                }
                 None => "被外部进程占用（未定位到监听 PID）".into(),
             };
             DiagItem { check: format!("端口 {port}"), ok: false, detail }
@@ -1104,7 +1156,7 @@ fn check_stale_info(app: tauri::AppHandle, state: State<'_, AppState>) -> StaleI
     let has_normal_mark = content.contains("--- normal shutdown ---");
     let log_nonempty = !content.trim().is_empty();
 
-    let occupied = port_in_use(cfg.web.port);
+    let occupied = probe_port(&cfg);
     StaleInfo {
         // 服务未运行 + 日志非空 + 无正常退出标记 → 上次异常强杀
         abnormal_exit: !occupied && log_nonempty && !has_normal_mark,
@@ -1121,7 +1173,8 @@ struct CleanResult {
     detail: String,
 }
 
-/// 一键清理残留进程：netstat 定位占用端口的监听 PID → taskkill /T /F。
+/// 一键清理残留进程：netstat 定位占用端口的监听 PID → 校验进程身份（确认为
+/// dsh web 服务）→ taskkill /T /F。非 dsh 进程拒绝终止，避免误杀无关服务。
 #[tauri::command]
 fn clean_stale(state: State<'_, AppState>) -> Result<CleanResult, String> {
     let cfg = state.config.lock().unwrap().clone();
@@ -1129,7 +1182,7 @@ fn clean_stale(state: State<'_, AppState>) -> Result<CleanResult, String> {
     if state.child.lock().unwrap().as_ref().is_some() {
         return Err("服务由本应用托管，无需清理".into());
     }
-    if !port_in_use(port) {
+    if !probe_port(&cfg) {
         return Ok(CleanResult { cleaned: false, detail: "未发现端口占用，无残留进程".into() });
     }
     let pids = listening_pids(port);
@@ -1139,18 +1192,34 @@ fn clean_stale(state: State<'_, AppState>) -> Result<CleanResult, String> {
             detail: "端口被占用但未定位到监听进程（可能是非 TCP 监听或权限受限）".into(),
         });
     }
+    // 进程身份校验：仅终止确认是 dsh web 的进程
+    let mut confirmed: Vec<u32> = Vec::new();
+    let mut unidentified: Vec<u32> = Vec::new();
     for pid in &pids {
+        match process_command_line(*pid) {
+            Some(cl) if is_dsh_process(&cl) => confirmed.push(*pid),
+            _ => unidentified.push(*pid),
+        }
+    }
+    if confirmed.is_empty() {
+        let pid_list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+        return Ok(CleanResult {
+            cleaned: false,
+            detail: format!("端口 {port} 的占用进程（PID {pid_list}）不是 dsh 服务，已中止清理以避免误杀"),
+        });
+    }
+    for pid in &confirmed {
         kill_tree(*pid);
     }
     std::thread::sleep(Duration::from_millis(600));
-    if port_in_use(port) {
+    if probe_port(&cfg) {
         Ok(CleanResult {
             cleaned: false,
-            detail: "已结束进程但端口仍被占用（可能还有其他进程绑定同一端口）".into(),
+            detail: "已结束 dsh 进程但端口仍被占用（可能还有其他进程绑定同一端口）".into(),
         })
     } else {
-        let list = pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
-        Ok(CleanResult { cleaned: true, detail: format!("已清理残留进程: {list}") })
+        let list = confirmed.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+        Ok(CleanResult { cleaned: true, detail: format!("已清理残留 dsh 进程: {list}") })
     }
 }
 
