@@ -8,50 +8,104 @@
 </head>
 <body>
   <div id="app">
-    <!-- 全屏悬浮容器：普通模式为普通块级，全屏模式下固定顶部、可滑出 -->
-    <div id="fs-chrome">
-      <header class="topbar" data-tauri-drag-region>
-      <div class="tb-left" data-tauri-drag-region>
-        <img class="brand-dot" data-tauri-drag-region src="./src/brand-icon.png" alt="鲸鱼娘" draggable="false" />
-      </div>
-      <div class="tb-status" data-tauri-drag-region>
-        <span id="status-dot" class="status-dot stopped" data-tauri-drag-region></span>
-        <span id="status-text" data-tauri-drag-region>服务已停止</span>
-      </div>
-      <div class="tb-right">
-        <button id="btn-toggle" class="btn-toggle start" title="启动 / 停止 dsh web 服务">启动服务</button>
-        <div class="win-controls">
-          <button id="btn-min" class="tb-btn" title="最小化" aria-label="最小化">
-            <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5" stroke="currentColor" stroke-width="1.1"/></svg>
-          </button>
-          <button id="btn-max" class="tb-btn" title="最大化/还原" aria-label="最大化">
-            <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.6" y="0.6" width="8.8" height="8.8" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
-          </button>
-          <button id="btn-close" class="tb-btn tb-close" title="关闭到托盘" aria-label="关闭到托盘">
-            <svg width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" stroke-width="1.1"/><line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" stroke-width="1.1"/></svg>
-          </button>
-        </div>
-      </div>
-    </header>
-    </div>
-
     <!-- 细条横幅：仅在异常/提示时出现 -->
     <div id="banner" class="banner hidden">
       <span id="banner-text"></span>
       <code id="banner-cmd" class="hidden"></code>
+      <button id="btn-banner-action" class="banner-btn hidden"></button>
       <button id="btn-retry" class="banner-btn hidden">重试</button>
     </div>
 
-    <!-- Web 界面主导区（服务就绪后整窗进入 Harness） -->
-    <main class="web-area">
-      <div class="web-frame-wrap">
-        <div id="web-placeholder" class="web-placeholder">
-          <p id="web-hint">服务启动后，将自动进入 Harness 界面</p>
-          <button id="btn-enter-harness" class="btn btn-primary hidden">进入 Harness 界面</button>
+    <!-- ============ 控制台视图（默认，hash: #/） ============ -->
+    <section id="view-console" class="view">
+      <header class="page-head">
+        <img class="brand-dot" src="./src/brand-icon.png" alt="鲸鱼娘" draggable="false" />
+        <div class="head-status">
+          <span id="status-dot" class="status-dot stopped"></span>
+          <span id="status-text">服务已停止</span>
+        </div>
+        <div class="head-actions">
+          <button id="btn-toggle" class="btn-toggle start" title="启动 / 停止 dsh web 服务">启动服务</button>
+          <a id="btn-settings" class="head-link" href="#/settings" title="设置">设置</a>
+        </div>
+      </header>
+
+      <div class="content">
+        <!-- 服务卡片 -->
+        <div class="card service-card">
+          <div class="card-title">服务</div>
+          <div class="kv-grid">
+            <div class="kv"><span class="k">状态</span><span id="svc-status" class="v">—</span></div>
+            <div class="kv"><span class="k">地址</span><span class="v">
+              <code id="svc-url">—</code>
+              <button id="btn-copy-url" class="mini-btn" title="复制地址">复制</button>
+            </span></div>
+            <div class="kv"><span class="k">进程 PID</span><span id="svc-pid" class="v">—</span></div>
+            <div class="kv"><span class="k">运行时长</span><span id="svc-uptime" class="v">—</span></div>
+            <div class="kv"><span class="k">日志</span><span class="v">
+              <button id="btn-open-log" class="mini-btn">打开日志文件夹</button>
+            </span></div>
+          </div>
+        </div>
+
+        <!-- 环境卡片 -->
+        <div class="card env-card">
+          <div class="card-title">环境</div>
+          <div class="kv-grid">
+            <div class="kv"><span class="k">Node.js</span><span id="env-node" class="v">检测中…</span></div>
+            <div class="kv"><span class="k">dsh</span><span id="env-dsh" class="v">检测中…</span></div>
+          </div>
+          <button id="btn-recheck-env" class="mini-btn">重新检测</button>
+        </div>
+
+        <!-- 操作行 -->
+        <div class="card actions-card">
+          <div class="card-title">操作</div>
+          <div class="actions-row">
+            <button id="btn-enter-harness" class="btn btn-primary hidden">进入 Harness 界面</button>
+            <button id="btn-restart" class="btn hidden">重启服务</button>
+            <button id="btn-diagnostics" class="btn">自检诊断</button>
+            <button id="btn-update" class="btn">检查更新</button>
+            <span id="update-result" class="action-hint"></span>
+          </div>
+        </div>
+
+        <!-- 自检诊断结果 -->
+        <div id="diag-panel" class="card diag-card hidden">
+          <div class="card-title">自检诊断</div>
+          <ul id="diag-list" class="diag-list"></ul>
+          <div class="diag-foot">
+            <button id="btn-copy-diag" class="mini-btn">复制报告</button>
+            <button id="btn-close-diag" class="mini-btn">关闭</button>
+          </div>
+        </div>
+
+        <!-- 日志查看器 -->
+        <div class="card log-card">
+          <div class="log-toolbar">
+            <div class="card-title">日志</div>
+            <input id="log-filter" class="log-filter" placeholder="过滤关键字…" spellcheck="false" />
+            <button id="btn-clear-log" class="mini-btn" title="清空日志文件">清空</button>
+          </div>
+          <pre id="log-view" class="log-view"></pre>
+          <button id="log-scroll-bottom" class="log-to-bottom hidden">回到底部 ↓</button>
         </div>
       </div>
-    </main>
+    </section>
+
+    <!-- ============ 设置视图（hash: #/settings） ============ -->
+    <section id="view-settings" class="view hidden">
+      <header class="page-head">
+        <a id="btn-back-console" class="head-link" href="#/">← 返回控制台</a>
+        <span class="head-title">设置</span>
+        <div class="head-actions"></div>
+      </header>
+      <div class="content" id="settings-content"></div>
+    </section>
   </div>
+  <script src="./src/ipc.js"></script>
   <script src="./src/main.js"></script>
+  <script src="./src/views-console.js"></script>
+  <script src="./src/views-settings.js"></script>
 </body>
 </html>
