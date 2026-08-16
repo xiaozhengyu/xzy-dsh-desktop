@@ -84,6 +84,9 @@
       els.btnToggle.textContent = "停止服务";
       els.btnToggle.className = "btn-toggle stop";
       els.btnToggle.disabled = !DSH.inTauri || busy || !owned;
+      els.btnToggle.title = owned
+        ? "停止本应用托管的 dsh web 服务"
+        : "外部实例由其他进程托管，本应用无法停止；可在自检诊断中清理残留";
     } else {
       els.btnToggle.textContent = "启动服务";
       els.btnToggle.className = "btn-toggle start";

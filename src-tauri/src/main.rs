@@ -1076,8 +1076,21 @@ struct StaleInfo {
 #[tauri::command]
 fn check_stale_info(app: tauri::AppHandle, state: State<'_, AppState>) -> StaleInfo {
     let cfg = state.config.lock().unwrap().clone();
-    // 本应用托管运行中 → 无残留问题
-    let owned = state.child.lock().unwrap().as_ref().is_some();
+    // 本应用托管运行中 → 无残留问题（与 get_status 一致：死进程句柄先清理）
+    let owned = {
+        let mut guard = state.child.lock().unwrap();
+        if let Some(child) = guard.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    *guard = None;
+                    false
+                }
+                _ => true,
+            }
+        } else {
+            false
+        }
+    };
     if owned {
         return StaleInfo { abnormal_exit: false, external_occupied: false, port_pid: None };
     }

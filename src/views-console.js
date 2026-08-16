@@ -240,6 +240,9 @@
         li.appendChild(detail);
         els.diagList.appendChild(li);
       }
+      // 端口被外部进程占用时，诊断面板直接提供清理入口
+      const portBlocked = items.some((it) => it.check.includes("端口") && !it.ok);
+      $("btn-clean-diag").classList.toggle("hidden", !portBlocked);
     } catch (e) {
       els.diagList.textContent = "";
       const li = document.createElement("li");
@@ -256,6 +259,18 @@
       .map((it) => `${it.ok ? "[OK]" : "[FAIL]"} ${it.check}: ${it.detail}`)
       .join("\n");
     copyText(text, $("btn-copy-diag"));
+  });
+  $("btn-clean-diag").addEventListener("click", async () => {
+    try {
+      const res = await invoke("clean_stale");
+      if (res.cleaned) {
+        $("btn-clean-diag").classList.add("hidden");
+      }
+      DSH.showBanner(res.detail, undefined, { info: true });
+      await DSH.refreshStatus();
+    } catch (e) {
+      DSH.showBanner("清理失败：" + (e?.message || String(e)));
+    }
   });
   $("btn-close-diag").addEventListener("click", () => {
     els.diagPanel.classList.add("hidden");
