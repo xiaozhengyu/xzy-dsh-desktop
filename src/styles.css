@@ -337,6 +337,7 @@ body.light { background: #eef0f3; }
   outline: none;
 }
 .setting-input:focus { border-color: var(--accent); }
+.setting-input.host { width: 180px; font-family: inherit; }
 
 .switch { position: relative; width: 36px; height: 20px; flex: none; }
 .switch input { opacity: 0; width: 0; height: 0; }

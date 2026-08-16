@@ -253,6 +253,12 @@
       console.error("get_config 失败，使用默认参数", e);
     }
   }
+  // 设置页保存后重新拉取配置（端口/主题等变化同步到共享状态）
+  DSH.reloadConfig = async () => {
+    await applyConfig();
+    DSH.render();
+    if (typeof DSH.renderConsole === "function") DSH.renderConsole();
+  };
 
   // ---------------- hash 路由（#/ 控制台 / #/settings 设置） ----------------
   function route() {

@@ -413,9 +413,10 @@ fn apply_window_effects(window: &tauri::WebviewWindow) {
 
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let back = MenuItem::with_id(app, "back", "控制台", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
     let fs = MenuItem::with_id(app, "fullscreen", "全屏", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出应用", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&back, &fs, &quit])?;
+    let menu = Menu::with_items(app, &[&back, &settings, &fs, &quit])?;
     let _ = FS_MENU_ITEM.set(fs.clone());
 
     // 用 32×32 PNG 作为托盘图标，DPI 下更清晰
@@ -433,7 +434,15 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.show();
                     let _ = win.unminimize();
-                    let _ = win.navigate(tauri::Url::parse("http://tauri.localhost/").expect("应用页 URL 解析失败"));
+                    let _ = win.navigate(tauri::Url::parse("http://tauri.localhost/#/").expect("应用页 URL 解析失败"));
+                }
+            }
+            "settings" => {
+                // 从 Harness 界面直达设置视图
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.unminimize();
+                    let _ = win.navigate(tauri::Url::parse("http://tauri.localhost/#/settings").expect("应用页 URL 解析失败"));
                 }
             }
             "fullscreen" => toggle_fullscreen_app(app),
@@ -767,6 +776,280 @@ fn clear_log(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------- P1：重启 / 诊断 / 更新
+
+/// 一键重启：仅当服务由本应用托管时允许；外部占用直接拒绝。
+#[tauri::command(async)]
+fn restart_service(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<StartOutcome, String> {
+    let cfg = state.config.lock().unwrap().clone();
+    let owned = {
+        let mut guard = state.child.lock().unwrap();
+        if let Some(child) = guard.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    *guard = None;
+                    false
+                }
+                _ => true,
+            }
+        } else {
+            false
+        }
+    };
+    if !owned {
+        return Err("服务由外部进程占用，无法重启（请在外部停止该进程后再试）".into());
+    }
+    let child = state.child.lock().unwrap().take();
+    if let Some(mut c) = child {
+        kill_tree(c.id());
+        let _ = c.wait();
+    }
+    *state.started_at.lock().unwrap() = None;
+    start_service_inner(&app, &state, &cfg).map_err(|e| format!("重启失败: {e:?}"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagItem {
+    check: String,
+    ok: bool,
+    detail: String,
+}
+
+/// 自检诊断：node/dsh、端口占用归属、日志目录可写、配置文件可读。
+#[tauri::command]
+fn run_diagnostics(app: tauri::AppHandle, state: State<'_, AppState>) -> Vec<DiagItem> {
+    let cfg = state.config.lock().unwrap().clone();
+    let mut items = Vec::new();
+
+    match where_find("node") {
+        Some(p) => items.push(DiagItem { check: "Node.js".into(), ok: true, detail: p }),
+        None => items.push(DiagItem {
+            check: "Node.js".into(),
+            ok: false,
+            detail: "PATH 中未找到 node，请先安装 Node.js".into(),
+        }),
+    }
+    match where_find("dsh") {
+        Some(shim) => {
+            let detail = match resolve_dsh_entry(&shim) {
+                Some(entry) => format!("{shim} → {entry}"),
+                None => format!("{shim}（未解析出 JS 入口，将回退 cmd /C dsh）"),
+            };
+            items.push(DiagItem { check: "dsh".into(), ok: true, detail });
+        }
+        None => items.push(DiagItem {
+            check: "dsh".into(),
+            ok: false,
+            detail: "PATH 中未找到 dsh，请执行 npm install -g @deepseek/dsh".into(),
+        }),
+    }
+    let port = cfg.web.port;
+    let occupied = port_in_use(port);
+    let owned = state.child.lock().unwrap().as_ref().is_some();
+    items.push(match (occupied, owned) {
+        (false, _) => DiagItem { check: format!("端口 {port}"), ok: true, detail: "空闲".into() },
+        (true, true) => DiagItem {
+            check: format!("端口 {port}"),
+            ok: true,
+            detail: "由本应用托管（正常运行）".into(),
+        },
+        (true, false) => DiagItem {
+            check: format!("端口 {port}"),
+            ok: false,
+            detail: "被外部进程占用——可能是异常强杀残留，可在控制台执行「清理残留」".into(),
+        },
+    });
+    match app.path().app_log_dir() {
+        Ok(dir) => {
+            let writable = fs::create_dir_all(&dir).is_ok()
+                && File::options()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("dsh-web.log"))
+                    .is_ok();
+            items.push(DiagItem {
+                check: "日志目录".into(),
+                ok: writable,
+                detail: if writable { dir.display().to_string() } else { format!("不可写: {}", dir.display()) },
+            });
+        }
+        Err(e) => items.push(DiagItem { check: "日志目录".into(), ok: false, detail: e.to_string() }),
+    }
+    match AppConfig::config_path() {
+        Some(p) => {
+            let ok = fs::read_to_string(&p)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .is_some();
+            items.push(DiagItem {
+                check: "配置文件".into(),
+                ok,
+                detail: if ok { p.display().to_string() } else { format!("缺失或解析失败: {}", p.display()) },
+            });
+        }
+        None => items.push(DiagItem {
+            check: "配置文件".into(),
+            ok: false,
+            detail: "无法确定路径（APPDATA 未设置）".into(),
+        }),
+    }
+    items
+}
+
+/// 解析字符串中的首个 x.y.z 形态版本号（宽松匹配，容忍 "v1.2.3" / "dsh 0.5.0" 等）。
+fn extract_version(text: &str) -> Option<String> {
+    text.split(|c: char| !c.is_ascii_digit() && c != '.')
+        .find(|p| {
+            let parts: Vec<&str> = p.split('.').collect();
+            parts.len() >= 2
+                && parts.iter().all(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit()))
+        })
+        .map(|s| s.to_string())
+}
+
+fn parse_semver(v: &str) -> Option<(u64, u64, u64)> {
+    let mut it = v.trim_start_matches('v').split('.');
+    let a = it.next()?.parse().ok()?;
+    let b = it.next().unwrap_or("0").parse().ok()?;
+    let c = it.next().unwrap_or("0").parse().ok()?;
+    Some((a, b, c))
+}
+
+/// 简单 semver 比较（major.minor.patch 数值比较）。
+fn semver_gt(a: &str, b: &str) -> bool {
+    match (parse_semver(a), parse_semver(b)) {
+        (Some(x), Some(y)) => x > y,
+        _ => false,
+    }
+}
+
+/// 本地 dsh 版本（优先 node <入口> --version，回退 cmd /C dsh --version）。
+fn dsh_version() -> Option<String> {
+    let node = where_find("node")?;
+    let shim = where_find("dsh")?;
+    let mut cmd = match resolve_dsh_entry(&shim) {
+        Some(entry) => {
+            let mut c = Command::new(&node);
+            c.arg(&entry);
+            c
+        }
+        None => {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "dsh"]);
+            c
+        }
+    };
+    cmd.arg("--version");
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let out = cmd.output().ok()?;
+    extract_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// 检查 dsh 是否有新版本：npm view @deepseek/dsh version 与本地版本比较。
+/// 失败（离线/无 npm）返回 None，不打扰用户；结果缓存 10 分钟。
+fn check_update_inner() -> Option<UpdateInfo> {
+    let current = dsh_version()?;
+    let mut cmd = Command::new("npm");
+    cmd.args(["view", "@deepseek/dsh", "version"]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let latest = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if latest.is_empty() {
+        return None;
+    }
+    let has_update = semver_gt(&latest, &current);
+    Some(UpdateInfo { current, latest, has_update })
+}
+
+#[tauri::command(async)]
+fn check_update(state: State<'_, AppState>) -> Option<UpdateInfo> {
+    {
+        let cache = state.update_cache.lock().unwrap();
+        if let Some((at, res)) = cache.as_ref() {
+            if at.elapsed() < Duration::from_secs(600) {
+                return res.clone();
+            }
+        }
+    }
+    let result = check_update_inner();
+    *state.update_cache.lock().unwrap() = Some((Instant::now(), result.clone()));
+    result
+}
+
+// ---------------------------------------------------------------- P2：设置
+
+/// 修改配置（写回 config.json，下次启动服务生效的项由 UI 文案提示）。
+#[tauri::command]
+fn set_config(
+    state: State<'_, AppState>,
+    web_port: Option<u16>,
+    web_host: Option<String>,
+    auto_start: Option<bool>,
+    theme_dark: Option<bool>,
+    auto_open_devtools: Option<bool>,
+) -> Result<(), String> {
+    let mut cfg = state.config.lock().unwrap();
+    if let Some(p) = web_port {
+        cfg.web.port = p;
+    }
+    if let Some(h) = web_host {
+        let h = h.trim().trim_matches('"').to_string();
+        cfg.web.host = if h.is_empty() { "127.0.0.1".into() } else { h };
+    }
+    if let Some(a) = auto_start {
+        cfg.service.auto_start = a;
+    }
+    if let Some(t) = theme_dark {
+        cfg.theme.dark = t;
+    }
+    if let Some(d) = auto_open_devtools {
+        cfg.devtools.auto_open = d;
+    }
+    cfg.save()
+}
+
+/// 开机自启（注册表 Run 键 + 配置镜像）。
+#[tauri::command]
+fn set_autostart(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    reg_set_autostart(enabled)?;
+    let mut cfg = state.config.lock().unwrap();
+    cfg.autostart = enabled;
+    let _ = cfg.save(); // 镜像写入失败不阻断（注册表为准）
+    Ok(())
+}
+
+/// 重应用 Mica 深浅主题（失败降级：仅前端 CSS 变量切换生效）。
+#[tauri::command]
+fn apply_theme(window: tauri::WebviewWindow, dark: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        match window_vibrancy::apply_mica(&window, Some(dark)) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("[dsh-desktop] Mica 重应用失败（非致命）: {e}");
+                Ok(())
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, dark);
+        Ok(())
+    }
+}
+
+/// 配置文件路径（设置页「关于」展示）。
+#[tauri::command]
+fn get_config_path() -> Option<String> {
+    AppConfig::config_path().map(|p| p.to_string_lossy().into_owned())
+}
+
 // ---------------------------------------------------------------- 入口
 
 fn main() {
@@ -795,7 +1078,14 @@ fn main() {
             tail_log,
             clear_log,
             start_service,
-            stop_service
+            stop_service,
+            restart_service,
+            run_diagnostics,
+            check_update,
+            set_config,
+            set_autostart,
+            apply_theme,
+            get_config_path
         ])
         .setup(move |app| {
             // 主窗口在 Rust 侧创建：需要挂载 initialization_script，

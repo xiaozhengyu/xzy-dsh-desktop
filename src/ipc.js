@@ -10,4 +10,12 @@
     if (!invoke) return Promise.reject(new Error("not-in-tauri"));
     return invoke(cmd, args);
   };
+  // 应用版本（关于卡片展示；失败回退 0.1.0）
+  window.DSH.getAppVersion = async () => {
+    try {
+      const app = window.__TAURI__?.app;
+      if (app && app.getVersion) return await app.getVersion();
+    } catch (e) { /* 忽略 */ }
+    return "0.1.0";
+  };
 })();

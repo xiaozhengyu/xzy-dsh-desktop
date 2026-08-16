@@ -203,11 +203,95 @@
     }, 1500);
   }
 
-  // ---------------- P1 占位：重启 / 自检 / 检查更新 ----------------
-  // 这些函数在 P1 中实现并启用按钮，目前按钮在 HTML 中保持 hidden。
-  els.btnRestart.addEventListener("click", () => { if (DSH.restartService) DSH.restartService(); });
-  els.btnDiag.addEventListener("click", () => { if (DSH.runDiagnostics) DSH.runDiagnostics(); });
-  els.btnUpdate.addEventListener("click", () => { if (DSH.checkUpdate) DSH.checkUpdate(); });
+  // ---------------- 操作行：重启 / 自检 / 检查更新（P1） ----------------
+
+  DSH.restartService = async () => {
+    if (!DSH.inTauri || state.busy) return;
+    const btn = els.btnRestart;
+    btn.disabled = true;
+    btn.textContent = "重启中…";
+    try {
+      await invoke("restart_service");
+      await DSH.refreshStatus();
+    } catch (e) {
+      console.error("重启失败", e);
+      DSH.showBanner("重启失败：" + (e?.message || String(e)), undefined, {
+        retry: DSH.restartService,
+      });
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "重启服务";
+      await DSH.refreshStatus();
+    }
+  };
+
+  DSH.runDiagnostics = async () => {
+    if (!DSH.inTauri) return;
+    els.diagPanel.classList.remove("hidden");
+    els.diagList.textContent = "";
+    const loading = document.createElement("li");
+    loading.textContent = "正在诊断…";
+    els.diagList.appendChild(loading);
+    try {
+      const items = await invoke("run_diagnostics");
+      els.diagList.textContent = "";
+      DSH.lastDiag = items;
+      for (const it of items) {
+        const li = document.createElement("li");
+        const mark = document.createElement("span");
+        mark.className = it.ok ? "diag-ok" : "diag-bad";
+        mark.textContent = it.ok ? "✓" : "✗";
+        const detail = document.createElement("span");
+        detail.className = "diag-item-detail";
+        detail.textContent = `${it.check}：${it.detail}`;
+        li.appendChild(mark);
+        li.appendChild(detail);
+        els.diagList.appendChild(li);
+      }
+    } catch (e) {
+      els.diagList.textContent = "";
+      const li = document.createElement("li");
+      li.textContent = "诊断执行失败：" + (e?.message || String(e));
+      els.diagList.appendChild(li);
+    }
+  };
+
+  DSH.checkUpdate = async () => {
+    if (!DSH.inTauri) return;
+    els.updateResult.textContent = "检查中…";
+    els.updateResult.className = "action-hint";
+    try {
+      const info = await invoke("check_update");
+      if (!info) {
+        els.updateResult.textContent = "无法检查（npm 不可用或离线）";
+        return;
+      }
+      if (info.hasUpdate) {
+        els.updateResult.textContent = `发现新版本：${info.current} → ${info.latest}`;
+        els.updateResult.className = "action-hint warn";
+      } else {
+        els.updateResult.textContent = `已是最新（${info.current}）`;
+        els.updateResult.className = "action-hint ok";
+      }
+    } catch (e) {
+      console.error("检查更新失败", e);
+      els.updateResult.textContent = "检查失败";
+    }
+  };
+
+  els.btnRestart.addEventListener("click", () => DSH.restartService());
+  els.btnDiag.addEventListener("click", () => DSH.runDiagnostics());
+  els.btnUpdate.addEventListener("click", () => DSH.checkUpdate());
+  $("btn-copy-diag").addEventListener("click", () => {
+    if (!DSH.lastDiag) return;
+    const text = DSH.lastDiag
+      .map((it) => `${it.ok ? "[OK]" : "[FAIL]"} ${it.check}: ${it.detail}`)
+      .join("\n");
+    copyText(text, $("btn-copy-diag"));
+  });
+  $("btn-close-diag").addEventListener("click", () => {
+    els.diagPanel.classList.add("hidden");
+  });
 
   // ---------------- 事件绑定（P0） ----------------
   els.btnEnter.addEventListener("click", DSH.navigateToHarness);
