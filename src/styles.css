@@ -273,7 +273,7 @@ body.light { background: #eef0f3; }
   display: flex; align-items: center; gap: 10px;
   margin-bottom: 8px;
 }
-.log-toolbar .card-title { margin-bottom: 0; }
+.log-toolbar .card-title { margin-bottom: 0; margin-right: auto; }
 .log-filter {
   flex: 1; max-width: 260px;
   padding: 4px 10px;

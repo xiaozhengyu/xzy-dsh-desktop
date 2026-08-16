@@ -310,8 +310,6 @@
 
   // ---------------- 初始化 ----------------
   els.btnToggle.addEventListener("click", toggleService);
-  $("btn-settings").addEventListener("click", () => { window.location.hash = "#/settings"; });
-  $("btn-back-console").addEventListener("click", () => { window.location.hash = "#/"; });
   window.addEventListener("hashchange", route);
 
   if (!DSH.inTauri) {

@@ -27,7 +27,6 @@
         <div class="head-actions">
           <button id="btn-enter-harness" class="btn btn-primary hidden">进入 Harness 界面</button>
           <button id="btn-toggle" class="btn-toggle start" title="启动 / 停止 dsh web 服务">启动服务</button>
-          <a id="btn-settings" class="head-link" href="#/settings" title="设置">设置</a>
         </div>
       </header>
 
@@ -77,9 +76,9 @@
         <div class="card log-card">
           <div class="log-toolbar">
             <div class="card-title">日志</div>
-            <button id="btn-open-log" class="mini-btn" title="在资源管理器中定位日志文件">打开日志文件夹</button>
             <input id="log-filter" class="log-filter" placeholder="过滤关键字…" spellcheck="false" />
             <button id="btn-clear-log" class="mini-btn" title="清空日志文件">清空</button>
+            <button id="btn-open-log" class="mini-btn" title="在资源管理器中定位日志文件">打开目录</button>
           </div>
           <pre id="log-view" class="log-view"></pre>
           <button id="log-scroll-bottom" class="log-to-bottom hidden">回到底部 ↓</button>
@@ -87,13 +86,8 @@
       </div>
     </section>
 
-    <!-- ============ 设置视图（hash: #/settings） ============ -->
+    <!-- ============ 设置视图（hash: #/settings，无顶栏，入口为托盘「设置」） ============ -->
     <section id="view-settings" class="view hidden">
-      <header class="page-head">
-        <a id="btn-back-console" class="head-link" href="#/">← 返回控制台</a>
-        <span class="head-title">设置</span>
-        <div class="head-actions"></div>
-      </header>
       <div class="content" id="settings-content"></div>
     </section>
   </div>
