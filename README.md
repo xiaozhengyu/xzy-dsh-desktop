@@ -72,7 +72,17 @@ xzy-dsh-desktop/
     ├── build.rs                # 构建脚本（icons 变更自动触发资源重嵌入）
     ├── tauri.conf.json         # NSIS 打包、安全与全局配置（主窗口在 main.rs 中创建）
     ├── capabilities/default.json
-    └── src/main.rs             # 全部 Rust 后端逻辑（启停/日志/诊断/更新/设置/托盘）
+    └── src/
+        ├── main.rs             # 薄入口：Builder / setup / 命令注册 / RunEvent
+        ├── config.rs           # 配置模型、读写、注册表自启、主题解析、设置命令
+        ├── env.rs              # 环境检测（node/dsh 定位、dsh.cmd shim 解析）
+        ├── service.rs          # 服务生命周期：端口/进程探测、启停/重启、状态
+        ├── logging.rs          # dsh-web.log 增量读取/清空/定位/退出标记
+        ├── diagnostics.rs      # 自检诊断
+        ├── stale.rs            # 异常退出/外部占用检测、身份校验清理
+        ├── tray.rs             # 系统托盘
+        ├── window.rs           # Mica 背景、F11/Esc 快捷键注入
+        └── state.rs            # 全局共享状态 AppState
 ```
 
 ## 编译运行
