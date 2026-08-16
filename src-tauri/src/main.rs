@@ -352,6 +352,44 @@ fn probe_port(cfg: &AppConfig) -> bool {
     }
 }
 
+/// HTTP 就绪探测：TCP 之上再发一次 GET /，收到 HTTP 响应头即视为 web 服务真正响应
+/// （避免「端口有监听 ≠ dsh web 可用」，如残留进程只开 TCP 未完成启动）。
+fn http_ready(host: &str, port: u16) -> bool {
+    use std::io::{Read, Write};
+    let text = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let Ok(mut addrs) = text.to_socket_addrs() else {
+        return false;
+    };
+    let Some(addr) = addrs.next() else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(800)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+    let req = format!("GET / HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 256];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/")
+}
+
+/// 按配置 host 做 HTTP 就绪探测（通配 host 回退到回环）。
+fn cfg_http_ready(cfg: &AppConfig) -> bool {
+    let host = cfg.web.host.trim();
+    if host == "0.0.0.0" || host == "::" || host.is_empty() {
+        http_ready("127.0.0.1", cfg.web.port) || http_ready("::1", cfg.web.port)
+    } else {
+        http_ready(host, cfg.web.port)
+    }
+}
+
 /// 获取进程命令行（PowerShell Get-CimInstance，wmic 在新系统已弃用）。
 fn process_command_line(pid: u32) -> Option<String> {
     let mut cmd = Command::new("powershell");
@@ -697,10 +735,10 @@ fn start_service_inner(
         .map_err(|e| StartError::SpawnFailed(format!("启动 dsh 失败: {e}")))?;
     *state.child.lock().unwrap() = Some(child);
 
-    // 4) 等待配置端口就绪
+    // 4) 等待服务就绪：TCP 可连 且 HTTP 返回响应（比单纯端口探测更接近「可用」）
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if probe_port(cfg) {
+        if probe_port(cfg) && cfg_http_ready(cfg) {
             *state.started_at.lock().unwrap() = Some(SystemTime::now());
             return Ok(StartOutcome::Started { url: web_url });
         }

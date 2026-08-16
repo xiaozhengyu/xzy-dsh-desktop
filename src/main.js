@@ -65,32 +65,49 @@
     return `点击「启动服务」运行 dsh web --port ${webPort}（${webUrl}）`;
   }
 
-  DSH.render = () => {
-    const { portInUse, owned, busy, busyAction, env } = state;
+  // ---------------- 服务状态机（集中判定，渲染/操作统一入口） ----------------
+  // 单一派生状态替代分散的 portInUse/owned/busy/busyAction 布尔推断：
+  // STOPPED / STARTING / RUNNING_OWNED / RUNNING_EXTERNAL / STOPPING
+  function deriveServiceStatus() {
+    const { portInUse, owned, busy, busyAction } = state;
+    if (busy) return busyAction === "停止" ? "STOPPING" : "STARTING";
+    if (portInUse && owned) return "RUNNING_OWNED";
+    if (portInUse) return "RUNNING_EXTERNAL";
+    return "STOPPED";
+  }
+  DSH.getServiceStatus = deriveServiceStatus;
 
-    if (busy) {
-      setStatus("starting", `正在${busyAction}…`, statusDetail());
-    } else if (portInUse && owned) {
-      setStatus("running", "服务运行中", statusDetail());
-    } else if (portInUse) {
-      setStatus("external", "服务运行中（外部实例）", statusDetail());
-    } else {
-      setStatus("stopped", "服务已停止", statusDetail());
+  DSH.render = () => {
+    const status = deriveServiceStatus();
+    const { busyAction, env } = state;
+
+    switch (status) {
+      case "STARTING": setStatus("starting", `正在${busyAction}…`, statusDetail()); break;
+      case "STOPPING": setStatus("starting", "正在停止…", statusDetail()); break;
+      case "RUNNING_OWNED": setStatus("running", "服务运行中", statusDetail()); break;
+      case "RUNNING_EXTERNAL": setStatus("external", "服务运行中（外部实例）", statusDetail()); break;
+      default: setStatus("stopped", "服务已停止", statusDetail());
     }
 
-    // 启停切换按钮（唯一主操作）
+    // 启停切换按钮：仅 RUNNING_OWNED 可停止；RUNNING_EXTERNAL 天然禁用
     const envOk = !!(env && env.node && env.dsh);
-    if (portInUse) {
+    if (status === "STARTING" || status === "STOPPING") {
+      els.btnToggle.textContent = busyAction === "停止" ? "停止服务" : "启动服务";
+      els.btnToggle.className = "btn-toggle " + (busyAction === "停止" ? "stop" : "start");
+      els.btnToggle.disabled = true;
+      els.btnToggle.title = "";
+    } else if (status === "RUNNING_OWNED" || status === "RUNNING_EXTERNAL") {
       els.btnToggle.textContent = "停止服务";
       els.btnToggle.className = "btn-toggle stop";
-      els.btnToggle.disabled = !DSH.inTauri || busy || !owned;
-      els.btnToggle.title = owned
+      els.btnToggle.disabled = status !== "RUNNING_OWNED";
+      els.btnToggle.title = status === "RUNNING_OWNED"
         ? "停止本应用托管的 dsh web 服务"
         : "外部实例由其他进程托管，本应用无法停止；可在自检诊断中清理残留";
     } else {
       els.btnToggle.textContent = "启动服务";
       els.btnToggle.className = "btn-toggle start";
-      els.btnToggle.disabled = !DSH.inTauri || busy || !envOk;
+      els.btnToggle.disabled = !DSH.inTauri || !envOk;
+      els.btnToggle.title = "";
     }
 
     if (typeof DSH.renderConsole === "function") DSH.renderConsole();
@@ -103,11 +120,14 @@
   DSH.navigateToHarness = navigateToHarness;
 
   /**
-   * 就绪后进入 Harness：端口能连上 ≠ dsh web 后端服务已初始化，
-   * 立即跳转可能触发 "web boot: entries did not activate" 竞态，缓冲一段时间再进入。
+   * 就绪后进入 Harness：Rust 侧启动流程已等待「HTTP 服务就绪」（TCP 之上
+   * 进一步确认 web 服务已响应），但 HTTP 就绪 ≠ Harness 前端 JS boot 完成——
+   * 立即跳转仍可能触发 "web boot: entries did not activate" 竞态，
+   * 因此保留一段 boot 补偿窗口（该竞态是 dsh web 前端初始化耗时决定的）。
    */
+  const READY_NAV_DELAY_MS = 2500;
   async function enterHarnessAfterReady() {
-    await new Promise((r) => setTimeout(r, 2500));
+    await new Promise((r) => setTimeout(r, READY_NAV_DELAY_MS));
     navigateToHarness();
   }
 
@@ -242,7 +262,7 @@
   };
 
   function toggleService() {
-    if (state.portInUse && state.owned) DSH.stopService();
+    if (deriveServiceStatus() === "RUNNING_OWNED") DSH.stopService();
     else DSH.startService();
   }
 

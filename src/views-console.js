@@ -77,8 +77,9 @@
 
   // ---------------- 操作行 ----------------
   function renderActions() {
-    els.btnEnter.classList.toggle("hidden", !state.portInUse);
-    els.btnRestart.classList.toggle("hidden", !(state.portInUse && state.owned));
+    const status = DSH.getServiceStatus();
+    els.btnEnter.classList.toggle("hidden", status === "STOPPED");
+    els.btnRestart.classList.toggle("hidden", status !== "RUNNING_OWNED");
   }
 
   function flash(btn, text, ms = 1200) {
