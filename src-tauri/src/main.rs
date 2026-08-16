@@ -11,6 +11,7 @@
 
 use std::{
     fs::{self, File},
+    io::{Read, Seek, SeekFrom},
     net::{TcpStream, ToSocketAddrs},
     path::PathBuf,
     process::{Child, Command, Stdio},
@@ -18,7 +19,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Mutex, OnceLock,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use serde::{Deserialize, Serialize};
@@ -74,20 +75,37 @@ impl Default for DevtoolsConfig {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default, rename_all = "camelCase")]
+struct ThemeConfig {
+    dark: bool,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self { dark: true }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default, rename_all = "camelCase")]
 struct AppConfig {
     note: String,
     web: WebConfig,
     service: ServiceConfig,
     devtools: DevtoolsConfig,
+    theme: ThemeConfig,
+    /// 开机自启状态（注册表镜像，load 时以真实注册表状态覆盖，供 UI 显示）。
+    autostart: bool,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            note: "DSH 桌面端配置文件。修改后重启应用生效。web.port 为 dsh web 服务端口（默认 3081，避开 Harness 默认 3080 可与现有会话并存）；web.host 为绑定主机；service.startTimeoutSecs 为服务启动等待上限（秒）；service.autoStart 为启动应用时自动拉起服务；devtools.autoOpen 为调试用自动打开开发者工具。".into(),
+            note: "DSH 桌面端配置文件。修改后重启应用生效。web.port 为 dsh web 服务端口（默认 3081，避开 Harness 默认 3080 可与现有会话并存）；web.host 为绑定主机；service.startTimeoutSecs 为服务启动等待上限（秒）；service.autoStart 为启动应用时自动拉起服务；devtools.autoOpen 为调试用自动打开开发者工具；theme.dark 为界面深浅主题；autostart 为开机自启状态（注册表镜像）。".into(),
             web: WebConfig::default(),
             service: ServiceConfig::default(),
             devtools: DevtoolsConfig::default(),
+            theme: ThemeConfig::default(),
+            autostart: false,
         }
     }
 }
@@ -110,28 +128,43 @@ impl AppConfig {
     /// 读取配置文件；不存在则写入默认值；解析失败回退默认值。
     fn load() -> Self {
         let def = Self::default();
-        let Some(file) = Self::config_path() else {
-            return def;
+        let mut cfg = match Self::config_path() {
+            Some(file) => {
+                if let Some(dir) = file.parent() {
+                    let _ = fs::create_dir_all(dir);
+                }
+                if !file.exists() {
+                    if let Ok(json) = serde_json::to_string_pretty(&def) {
+                        let _ = fs::write(&file, json);
+                    }
+                    def
+                } else {
+                    match fs::read_to_string(&file)
+                        .ok()
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                    {
+                        Some(c) => c,
+                        None => {
+                            eprintln!("[dsh-desktop] 配置文件解析失败，使用默认值: {}", file.display());
+                            def
+                        }
+                    }
+                }
+            }
+            None => def,
         };
-        if let Some(dir) = file.parent() {
-            let _ = fs::create_dir_all(dir);
-        }
-        if !file.exists() {
-            if let Ok(json) = serde_json::to_string_pretty(&def) {
-                let _ = fs::write(&file, json);
-            }
-            return def;
-        }
-        match fs::read_to_string(&file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-        {
-            Some(cfg) => cfg,
-            None => {
-                eprintln!("[dsh-desktop] 配置文件解析失败，使用默认值: {}", file.display());
-                def
-            }
-        }
+        // 开机自启状态以注册表为准（配置仅作镜像，供 UI 显示开关状态）
+        cfg.autostart = reg_autostart_enabled();
+        cfg
+    }
+
+    /// 持久化当前配置到 config.json（保留 note 字段）。
+    fn save(&self) -> Result<(), String> {
+        let Some(file) = Self::config_path() else {
+            return Err("无法确定配置文件路径".into());
+        };
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        fs::write(&file, json).map_err(|e| format!("写入配置失败: {e}"))
     }
 }
 
@@ -140,6 +173,12 @@ struct AppState {
     exiting: AtomicBool,
     /// 环境检测缓存（node/dsh 路径启动后不会变，避免每次进入控制台页都起子进程探测）。
     env_info: Mutex<Option<EnvInfo>>,
+    /// 配置（运行时可变：set_config 修改后同时持久化到 config.json）。
+    config: Mutex<AppConfig>,
+    /// 本应用派生的 dsh 进程启动时刻（用于前端展示运行时长）。
+    started_at: Mutex<Option<SystemTime>>,
+    /// 检查更新结果缓存（10 分钟内不重复联网）。
+    update_cache: Mutex<Option<(Instant, Option<UpdateInfo>)>>,
 }
 
 /// 托盘「全屏 / 退出全屏」菜单项句柄（文案随主窗口全屏状态切换）。
@@ -177,6 +216,15 @@ enum StartError {
     DshMissing,
     SpawnFailed(String),
     NotReady(String),
+}
+
+/// dsh 更新检查结果（P1）。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateInfo {
+    current: String,
+    latest: String,
+    has_update: bool,
 }
 
 // ---------------------------------------------------------------- 系统工具
@@ -255,6 +303,42 @@ fn kill_tree(pid: u32) {
     #[cfg(windows)]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     let _ = cmd.output();
+}
+
+// ---------------------------------------------------------------- 开机自启（注册表）
+
+const AUTOSTART_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const AUTOSTART_VALUE: &str = "DSH-Desktop";
+
+/// 读取注册表 Run 键中的自启项是否存在。
+fn reg_autostart_enabled() -> bool {
+    let mut cmd = Command::new("reg");
+    cmd.args(["query", AUTOSTART_RUN_KEY, "/v", AUTOSTART_VALUE]);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd.output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// 写入/删除注册表 Run 键自启项（值为当前 exe 路径）。
+fn reg_set_autostart(enabled: bool) -> Result<(), String> {
+    let mut cmd = Command::new("reg");
+    if enabled {
+        let exe = std::env::current_exe().map_err(|e| format!("无法定位当前 exe: {e}"))?;
+        cmd.args([
+            "add", AUTOSTART_RUN_KEY, "/v", AUTOSTART_VALUE, "/t", "REG_SZ", "/d",
+            &format!("\"{}\"", exe.display()), "/f",
+        ]);
+    } else {
+        cmd.args(["delete", AUTOSTART_RUN_KEY, "/v", AUTOSTART_VALUE, "/f"]);
+    }
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let out = cmd.output().map_err(|e| format!("reg 执行失败: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("reg 操作失败（exit {}）", out.status.code().unwrap_or(-1)))
+    }
 }
 
 // ---------------------------------------------------------------- 窗口 / 托盘
@@ -400,26 +484,31 @@ fn get_env_info(state: State<'_, AppState>, force: Option<bool>) -> EnvInfo {
 #[serde(rename_all = "camelCase")]
 struct ConfigInfo {
     web_port: u16,
+    web_host: String,
     web_url: String,
     auto_open_devtools: bool,
     auto_start: bool,
+    theme_dark: bool,
+    autostart: bool,
 }
 
 #[tauri::command]
-fn get_config(cfg: State<'_, AppConfig>) -> ConfigInfo {
+fn get_config(state: State<'_, AppState>) -> ConfigInfo {
+    let cfg = state.config.lock().unwrap();
     ConfigInfo {
         web_port: cfg.web.port,
+        web_host: cfg.web.host.clone(),
         web_url: cfg.web_url(),
         auto_open_devtools: cfg.devtools.auto_open,
         auto_start: cfg.service.auto_start,
+        theme_dark: cfg.theme.dark,
+        autostart: cfg.autostart,
     }
 }
 
 #[tauri::command(async)]
-fn get_status(
-    state: State<'_, AppState>,
-    cfg: State<'_, AppConfig>,
-) -> StatusInfo {
+fn get_status(state: State<'_, AppState>) -> StatusInfo {
+    let cfg = state.config.lock().unwrap().clone();
     let mut owned = false;
     {
         let mut guard = state.child.lock().unwrap();
@@ -443,7 +532,7 @@ fn get_status(
 /// 服务启动核心逻辑（命令、托盘、自动启动共用）。
 fn start_service_inner(
     app: &tauri::AppHandle,
-    child_state: &Mutex<Option<Child>>,
+    state: &AppState,
     cfg: &AppConfig,
 ) -> Result<StartOutcome, StartError> {
     let web_url = cfg.web_url();
@@ -460,7 +549,7 @@ fn start_service_inner(
     }
 
     // 清理可能残留的旧进程
-    if let Some(mut old) = child_state.lock().unwrap().take() {
+    if let Some(mut old) = state.child.lock().unwrap().take() {
         kill_tree(old.id());
         let _ = old.wait();
     }
@@ -507,16 +596,17 @@ fn start_service_inner(
     let child = cmd
         .spawn()
         .map_err(|e| StartError::SpawnFailed(format!("启动 dsh 失败: {e}")))?;
-    *child_state.lock().unwrap() = Some(child);
+    *state.child.lock().unwrap() = Some(child);
 
     // 4) 等待配置端口就绪
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if port_in_use(port) {
+            *state.started_at.lock().unwrap() = Some(SystemTime::now());
             return Ok(StartOutcome::Started { url: web_url });
         }
         {
-            let mut guard = child_state.lock().unwrap();
+            let mut guard = state.child.lock().unwrap();
             if let Some(child) = guard.as_mut() {
                 if let Ok(Some(_)) = child.try_wait() {
                     // 进程已退出：清空句柄，避免后续 get_status 把死进程误判为 owned
@@ -541,9 +631,9 @@ fn start_service_inner(
 fn start_service(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-    cfg: State<'_, AppConfig>,
 ) -> Result<StartOutcome, StartError> {
-    start_service_inner(&app, &state.child, &cfg)
+    let cfg = state.config.lock().unwrap().clone();
+    start_service_inner(&app, &state, &cfg)
 }
 
 #[tauri::command(async)]
@@ -553,6 +643,127 @@ fn stop_service(state: State<'_, AppState>) -> Result<(), String> {
         kill_tree(c.id());
         let _ = c.wait();
     }
+    *state.started_at.lock().unwrap() = None;
+    Ok(())
+}
+
+// ---------------------------------------------------------------- 控制台信息 / 日志
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceInfo {
+    pid: Option<u32>,
+    started_at_ms: Option<u64>,
+    log_path: String,
+}
+
+/// 服务详情：PID、启动时刻（epoch 毫秒，供前端计算运行时长）、日志文件路径。
+#[tauri::command]
+fn get_service_info(app: tauri::AppHandle, state: State<'_, AppState>) -> ServiceInfo {
+    let owned = {
+        let mut guard = state.child.lock().unwrap();
+        if let Some(child) = guard.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    *guard = None;
+                    false
+                }
+                _ => true,
+            }
+        } else {
+            false
+        }
+    };
+    let pid = if owned {
+        state.child.lock().unwrap().as_ref().map(|c| c.id())
+    } else {
+        None
+    };
+    let started_at_ms = if owned {
+        state
+            .started_at
+            .lock()
+            .unwrap()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+    } else {
+        None
+    };
+    let log_path = app
+        .path()
+        .app_log_dir()
+        .map(|d| d.join("dsh-web.log").to_string_lossy().into_owned())
+        .unwrap_or_default();
+    ServiceInfo { pid, started_at_ms, log_path }
+}
+
+/// 在资源管理器中定位日志文件（explorer /select）。
+#[tauri::command]
+fn open_log_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let log_path = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| e.to_string())?
+        .join("dsh-web.log");
+    let mut cmd = Command::new("explorer");
+    cmd.arg("/select,").arg(&log_path);
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd.spawn().map_err(|e| format!("无法打开资源管理器: {e}"))?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TailResult {
+    offset: u64,
+    lines: Vec<String>,
+    truncated: bool,
+}
+
+/// 增量读取 dsh-web.log：从上次 offset 读到文件尾。
+/// 文件被截断（如被清空/轮转）时从头读取并置 truncated。
+#[tauri::command]
+fn tail_log(app: tauri::AppHandle, offset: u64) -> TailResult {
+    let log_path = app
+        .path()
+        .app_log_dir()
+        .map(|d| d.join("dsh-web.log"))
+        .unwrap_or_default();
+    let size = fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        return TailResult { offset: 0, lines: vec![], truncated: false };
+    }
+    let truncated = offset > size;
+    let start = if truncated { 0 } else { offset };
+    let mut content = String::new();
+    if let Ok(mut f) = File::open(&log_path) {
+        let _ = f.seek(SeekFrom::Start(start));
+        let _ = f.read_to_string(&mut content);
+    }
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    if start > 0 && !lines.is_empty() {
+        // 从任意字节偏移开始可能落在行中间：丢弃首个不完整片段，避免重复/乱码
+        lines.remove(0);
+    }
+    lines.retain(|l| !l.is_empty());
+    TailResult { offset: size, lines, truncated }
+}
+
+/// 清空日志文件（Node 以 append 方式写入，truncate 后继续追加安全）。
+#[tauri::command]
+fn clear_log(app: tauri::AppHandle) -> Result<(), String> {
+    let log_path = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| e.to_string())?
+        .join("dsh-web.log");
+    fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&log_path)
+        .map_err(|e| format!("无法清空日志: {e}"))?;
     Ok(())
 }
 
@@ -571,17 +782,22 @@ fn main() {
             child: Mutex::new(None),
             exiting: AtomicBool::new(false),
             env_info: Mutex::new(None),
+            config: Mutex::new(cfg.clone()),
+            started_at: Mutex::new(None),
+            update_cache: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_env_info,
             get_config,
             get_status,
+            get_service_info,
+            open_log_folder,
+            tail_log,
+            clear_log,
             start_service,
             stop_service
         ])
         .setup(move |app| {
-            app.manage(setup_cfg.clone());
-
             // 主窗口在 Rust 侧创建：需要挂载 initialization_script，
             // 向每次页面加载（含整窗导航后的 Harness 页）注入全屏快捷键（F11/Esc）。
             let win = tauri::WebviewWindowBuilder::new(
@@ -617,9 +833,9 @@ fn main() {
             if setup_cfg.service.auto_start {
                 let app = app.handle().clone();
                 std::thread::spawn(move || {
-                    let cfg = app.state::<AppConfig>();
                     let st = app.state::<AppState>();
-                    if let Err(e) = start_service_inner(&app, &st.child, &cfg) {
+                    let cfg = st.config.lock().unwrap().clone();
+                    if let Err(e) = start_service_inner(&app, &st, &cfg) {
                         eprintln!("[dsh-desktop] 自动启动服务失败: {e:?}");
                     }
                 });
