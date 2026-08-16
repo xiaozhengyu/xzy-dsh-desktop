@@ -403,7 +403,7 @@ fn sync_fs_menu_label(app: &tauri::AppHandle) {
         .get_webview_window("main")
         .and_then(|win| win.is_fullscreen().ok())
         .unwrap_or(false);
-    let _ = item.set_text(if is_fs { "退出全屏" } else { "全屏" });
+    let _ = item.set_text(if is_fs { "退出全屏" } else { "进入全屏" });
 }
 
 /// 切换主窗口全屏状态，并同步托盘菜单文案（托盘菜单与快捷键共用）。
@@ -457,11 +457,11 @@ fn apply_window_effects(window: &tauri::WebviewWindow, dark: bool) {
 }
 
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let back = MenuItem::with_id(app, "back", "控制台", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
-    let fs = MenuItem::with_id(app, "fullscreen", "全屏", true, None::<&str>)?;
+    let fs = MenuItem::with_id(app, "fullscreen", "进入全屏", true, None::<&str>)?;
+    let back = MenuItem::with_id(app, "back", "控制面板", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "功能设置", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出应用", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&back, &settings, &fs, &quit])?;
+    let menu = Menu::with_items(app, &[&fs, &back, &settings, &quit])?;
     let _ = FS_MENU_ITEM.set(fs.clone());
 
     // 用 32×32 PNG 作为托盘图标，DPI 下更清晰
