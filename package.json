@@ -1,7 +1,7 @@
 {
   "name": "dsh-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH 桌面端 —— Tauri 2 外壳（Windows 11，不内嵌 Node.js，调用系统全局 node/dsh）",
   "type": "module",
   "scripts": {

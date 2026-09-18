@@ -1,6 +1,6 @@
 [package]
 name = "dsh-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "DSH 桌面端（Tauri 2 外壳，仅 Windows 11）"
 authors = ["DeepSeek"]
 edition = "2021"
