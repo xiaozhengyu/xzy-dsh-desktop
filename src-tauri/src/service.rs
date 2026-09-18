@@ -14,7 +14,7 @@ use std::os::windows::process::CommandExt;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, LOCAL_WEB_HOST};
 use crate::env::{resolve_dsh_entry, where_find};
 use crate::logging::append_log_line;
 use crate::state::AppState;
@@ -78,7 +78,7 @@ fn port_in_use(port: u16) -> bool {
 /// - 通配 host（0.0.0.0 / ::）按回环探测（0.0.0.0 监听涵盖回环）；
 /// - 具体 host 直接探测该地址。
 pub fn probe_port(cfg: &AppConfig) -> bool {
-    let host = cfg.web.host.trim();
+    let host = LOCAL_WEB_HOST;
     if host == "0.0.0.0" || host == "::" || host.is_empty() {
         port_in_use(cfg.web.port)
     } else {
@@ -116,7 +116,7 @@ fn http_ready(host: &str, port: u16) -> bool {
 
 /// 按配置 host 做 HTTP 就绪探测（通配 host 回退到回环）。
 fn cfg_http_ready(cfg: &AppConfig) -> bool {
-    let host = cfg.web.host.trim();
+    let host = LOCAL_WEB_HOST;
     if host == "0.0.0.0" || host == "::" || host.is_empty() {
         http_ready("127.0.0.1", cfg.web.port) || http_ready("::1", cfg.web.port)
     } else {
@@ -215,6 +215,21 @@ fn effective_web_url(state: &AppState, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+fn clear_service_state(state: &AppState) {
+    *state.started_at.lock().unwrap() = None;
+    *state.authenticated_url.lock().unwrap() = None;
+    *state.pending_harness_navigation.lock().unwrap() = None;
+}
+
+fn stop_owned_process(state: &AppState) {
+    let child = state.child.lock().unwrap().take();
+    if let Some(mut child) = child {
+        kill_tree(child.id());
+        let _ = child.wait();
+    }
+    clear_service_state(state);
+}
+
 /// 健康检查通过后给 stdout reader 一小段时间完成认证 URL 捕获。
 /// 超时只代表旧版 dsh 没有输出 token，不阻断服务启动。
 fn wait_for_effective_web_url(state: &AppState, fallback: &str) -> String {
@@ -258,8 +273,7 @@ pub fn get_status(state: State<'_, AppState>) -> StatusInfo {
         }
     }
     if exited {
-        *state.authenticated_url.lock().unwrap() = None;
-        *state.pending_harness_navigation.lock().unwrap() = None;
+        clear_service_state(&state);
     }
     StatusInfo {
         port_in_use: probe_port(&cfg),
@@ -273,12 +287,14 @@ pub fn get_status(state: State<'_, AppState>) -> StatusInfo {
 /// 非托管的外部实例也能通过 netstat 探测到占用 PID。
 #[tauri::command]
 pub fn get_service_info(app: AppHandle, state: State<'_, AppState>) -> ServiceInfo {
+    let mut exited = false;
     let owned = {
         let mut guard = state.child.lock().unwrap();
         if let Some(child) = guard.as_mut() {
             match child.try_wait() {
                 Ok(Some(_)) => {
                     *guard = None;
+                    exited = true;
                     false
                 }
                 _ => true,
@@ -287,6 +303,9 @@ pub fn get_service_info(app: AppHandle, state: State<'_, AppState>) -> ServiceIn
             false
         }
     };
+    if exited {
+        clear_service_state(&state);
+    }
     let cfg = state.config.lock().unwrap().clone();
     let pid = if owned {
         state.child.lock().unwrap().as_ref().map(|c| c.id())
@@ -336,16 +355,10 @@ pub fn start_service_inner(
         });
     }
 
-    *state.authenticated_url.lock().unwrap() = None;
-    *state.pending_harness_navigation.lock().unwrap() = None;
+    // 清理可能残留的旧进程和认证状态
+    stop_owned_process(state);
 
-    // 清理可能残留的旧进程
-    if let Some(mut old) = state.child.lock().unwrap().take() {
-        kill_tree(old.id());
-        let _ = old.wait();
-    }
-
-    // 3) 构造命令：优先 node <dsh 真实入口>，解析失败回退 cmd /C dsh
+    // 3) 构造命令：新版 dsh 使用 `--profile web`，解析失败回退 cmd /C dsh
     let mut cmd = match resolve_dsh_entry(&dsh_shim) {
         Some(entry) => {
             let mut c = Command::new(&node);
@@ -358,14 +371,11 @@ pub fn start_service_inner(
             c
         }
     };
-    cmd.arg("web")
+    cmd.arg("--profile")
+        .arg("web")
         .arg("--no-open")
         .arg("--port")
         .arg(port.to_string());
-    // 绑定 host 闭环：配置了非默认 host 时显式传给 dsh web
-    if cfg.web.host != "127.0.0.1" && !cfg.web.host.is_empty() {
-        cmd.arg("--host").arg(&cfg.web.host);
-    }
     // 不弹出控制台窗口：GUI 子系统应用 spawn 控制台子系统进程（node/cmd）时，
     // Windows 默认会新建一个终端窗口；CREATE_NO_WINDOW 禁止之，输出仍写入日志文件。
     #[cfg(windows)]
@@ -408,6 +418,7 @@ pub fn start_service_inner(
                 if let Ok(Some(_)) = child.try_wait() {
                     // 进程已退出：清空句柄，避免后续 get_status 把死进程误判为 owned
                     *guard = None;
+                    clear_service_state(state);
                     return Err(StartError::NotReady(format!(
                         "dsh 进程提前退出，请查看日志: {}",
                         log_file.display()
@@ -417,6 +428,7 @@ pub fn start_service_inner(
         }
         std::thread::sleep(Duration::from_millis(300));
     }
+    stop_owned_process(state);
     Err(StartError::NotReady(format!(
         "启动超时（{}s），请查看日志: {}",
         timeout.as_secs(),
@@ -429,6 +441,7 @@ pub fn start_service(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<StartOutcome, StartError> {
+    let _operation = state.service_operation.lock().unwrap();
     let cfg = state.config.lock().unwrap().clone();
     start_service_inner(&app, &state, &cfg)
 }
@@ -464,14 +477,8 @@ pub fn navigate_to_harness(
 
 #[tauri::command(async)]
 pub fn stop_service(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let child = state.child.lock().unwrap().take();
-    if let Some(mut c) = child {
-        kill_tree(c.id());
-        let _ = c.wait();
-    }
-    *state.started_at.lock().unwrap() = None;
-    *state.authenticated_url.lock().unwrap() = None;
-    *state.pending_harness_navigation.lock().unwrap() = None;
+    let _operation = state.service_operation.lock().unwrap();
+    stop_owned_process(&state);
     append_log_line(&app, "[dsh-desktop] --- normal shutdown ---");
     Ok(())
 }
@@ -482,13 +489,16 @@ pub fn restart_service(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<StartOutcome, String> {
+    let _operation = state.service_operation.lock().unwrap();
     let cfg = state.config.lock().unwrap().clone();
+    let mut exited = false;
     let owned = {
         let mut guard = state.child.lock().unwrap();
         if let Some(child) = guard.as_mut() {
             match child.try_wait() {
                 Ok(Some(_)) => {
                     *guard = None;
+                    exited = true;
                     false
                 }
                 _ => true,
@@ -497,17 +507,13 @@ pub fn restart_service(
             false
         }
     };
+    if exited {
+        clear_service_state(&state);
+    }
     if !owned {
         return Err("服务由外部进程占用，无法重启（请在外部停止该进程后再试）".into());
     }
-    let child = state.child.lock().unwrap().take();
-    if let Some(mut c) = child {
-        kill_tree(c.id());
-        let _ = c.wait();
-    }
-    *state.started_at.lock().unwrap() = None;
-    *state.authenticated_url.lock().unwrap() = None;
-    *state.pending_harness_navigation.lock().unwrap() = None;
+    stop_owned_process(&state);
     start_service_inner(&app, &state, &cfg).map_err(|e| format!("重启失败: {e:?}"))
 }
 

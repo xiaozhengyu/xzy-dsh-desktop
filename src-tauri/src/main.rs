@@ -3,8 +3,8 @@
 // 设计要点：
 //  - 不内嵌任何 Node.js 运行时：启动时直接调用系统 PATH 中的全局 node 与 dsh。
 //  - 通过解析 npm 生成的 dsh.cmd shim 得到真实 JS 入口，用 Command::new(node) 直接执行，
-//    从而满足“Rust 后端通过 node 执行 dsh web --no-open --port 3081”的要求；解析失败时
-//    回退到 `cmd /C dsh web --no-open --port 3081`。
+//    从而满足“Rust 后端通过 node 执行 dsh --profile web --no-open --port 3081”的要求；
+//    解析失败时回退到 `cmd /C dsh --profile web --no-open --port 3081`。
 //  - 进程树清理使用 Windows 原生 taskkill /T /F（比 sysinfo 更轻、更可靠）。
 //  - 关闭主窗口 → 最小化到托盘；托盘“退出应用” → 先杀掉派生进程再退出。
 //
@@ -53,6 +53,7 @@ fn main() {
             exiting: AtomicBool::new(false),
             env_info: Mutex::new(None),
             config: Mutex::new(cfg.clone()),
+            service_operation: Mutex::new(()),
             started_at: Mutex::new(None),
             authenticated_url: Mutex::new(None),
             pending_harness_navigation: Mutex::new(None),
@@ -128,7 +129,7 @@ fn main() {
             // 按配置决定是否自动打开 DevTools（调试用）
             #[cfg(any(debug_assertions, feature = "devtools"))]
             if setup_cfg.devtools.auto_open {
-                let _ = win.open_devtools();
+                win.open_devtools();
             }
 
             crate::tray::build_tray(app.handle())?;
@@ -139,6 +140,7 @@ fn main() {
                 let app = app.handle().clone();
                 std::thread::spawn(move || {
                     let st = app.state::<AppState>();
+                    let _operation = st.service_operation.lock().unwrap();
                     let cfg = st.config.lock().unwrap().clone();
                     if let Err(e) = crate::service::start_service_inner(&app, &st, &cfg) {
                         eprintln!("[dsh-desktop] 自动启动服务失败: {e:?}");

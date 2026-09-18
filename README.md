@@ -17,7 +17,7 @@
 
 ## 功能清单
 
-- **启动服务**：`node <dsh 入口> web --no-open --port 3081`，捕获 dsh 输出的认证 URL，日志写入
+- **启动服务**：`node <dsh 入口> --profile web --no-open --port 3081`，捕获 dsh 输出的认证 URL，日志写入
   `%LOCALAPPDATA%\com.deepseek.harness-desktop\logs\dsh-web.log`
 - **停止服务**：`taskkill /PID <pid> /T /F` 强杀整棵进程树，防止端口残留
 - **端口检测**：启动前探测 `127.0.0.1:3081` / `[::1]:3081`；已被占用时顶栏显示琥珀色
@@ -30,7 +30,7 @@
   - 日志查看器：增量 tail、自动滚动 + 回到底部、错误行高亮、关键字过滤、清空
   - 异常兜底：上次异常强杀（日志无正常退出标记）→ 琥珀色提示 + 一键清理残留进程
 - **设置页**（托盘「设置」或控制台头部入口直达）：
-  - 服务：端口 / 绑定主机（写 config.json，下次启动服务生效）
+  - 服务：端口（服务固定绑定本机回环地址 127.0.0.1）
   - 启动：开机自启（注册表 Run 键）、启动时自动启动服务
   - 外观：深浅主题（Mica + 页面配色）
   - 调试：DevTools 自动打开；关于：版本、图标署名、配置文件路径
@@ -128,7 +128,7 @@ npm run build:portable
 
 ## 运行说明
 
-- 启动后点击「启动服务」→ Rust 后端以系统 node 启动 `dsh web --no-open --port 3081`，
+- 启动后点击「启动服务」→ Rust 后端以系统 node 启动 `dsh --profile web --no-open --port 3081`，
   捕获 `dsh web: http://...?token=...` 后，端口就绪时界面自动整窗进入 Harness Web UI
 - 关闭窗口 = 最小化到托盘（右下角图标）；托盘菜单（自上而下）：进入全屏 / 退出全屏、
   控制面板 / 功能设置 / 退出应用；从 Harness 界面点「控制面板」或「功能设置」会导航回
@@ -184,7 +184,7 @@ dsh 服务本身是独立 Node 进程，另计约 60–100 MB（不含在壳内�
 ```
 
 - `web.port`：dsh web 服务端口（默认 3081，避开 Harness 默认 3080，可与现有会话并存）
-- `web.host`：服务绑定主机（默认回环地址）
+- `web.host`：固定为 `127.0.0.1`，个人模式不支持对外绑定
 - `service.startTimeoutSecs`：服务启动等待上限（秒）
 - `service.autoStart`：启动应用时自动拉起服务（设置页「启动时自动启动服务」）
 - `devtools.autoOpen`：调试用，启动时自动打开开发者工具

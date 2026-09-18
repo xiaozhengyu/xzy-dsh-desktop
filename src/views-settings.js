@@ -1,4 +1,4 @@
-// views-settings.js —— 设置视图：服务（端口/主机）、启动（自启/自动启动）、
+// views-settings.js —— 设置视图：服务（端口）、启动（自启/自动启动）、
 // 外观（深浅主题）、调试（DevTools）、关于
 (() => {
   "use strict";
@@ -23,16 +23,6 @@
             <div class="setting-control">
               <input id="set-port" class="setting-input" type="number" min="1" max="65535" />
               <button id="btn-save-port" class="btn">保存</button>
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="setting-label">
-              <span class="setting-name">绑定主机</span>
-              <span class="setting-desc">留空为回环地址 127.0.0.1</span>
-            </div>
-            <div class="setting-control">
-              <input id="set-host" class="setting-input host" placeholder="127.0.0.1" />
-              <button id="btn-save-host" class="btn">保存</button>
             </div>
           </div>
         </div>
@@ -127,16 +117,6 @@
       }
     });
 
-    $("btn-save-host").addEventListener("click", async () => {
-      try {
-        await invoke("set_config", { webHost: $("set-host").value });
-        flash($("btn-save-host"), "已保存");
-        await DSH.reloadConfig();
-      } catch (e) {
-        alert("保存失败：" + (e?.message || String(e)));
-      }
-    });
-
     $("set-autostart").addEventListener("change", async (e) => {
       try {
         await invoke("set_autostart", { enabled: e.target.checked });
@@ -187,7 +167,6 @@
     await DSH.reloadConfig();
     const cfg = state.config || {};
     $("set-port").value = cfg.webPort ?? 3081;
-    $("set-host").value = cfg.webHost ?? "127.0.0.1";
     $("set-autostart").checked = !!cfg.autostart;
     $("set-autostart-service").checked = !!cfg.autoStart;
     const modeRadio = document.querySelector(`input[name="theme-mode"][value="${cfg.themeMode || "system"}"]`);

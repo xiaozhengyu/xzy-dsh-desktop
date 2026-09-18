@@ -9,6 +9,8 @@ use tauri::State;
 
 use crate::state::AppState;
 
+pub const LOCAL_WEB_HOST: &str = "127.0.0.1";
+
 // ---------------------------------------------------------------- 配置结构
 
 /// Web 服务绑定配置。
@@ -21,7 +23,7 @@ pub struct WebConfig {
 
 impl Default for WebConfig {
     fn default() -> Self {
-        Self { host: "127.0.0.1".into(), port: 3081 }
+        Self { host: LOCAL_WEB_HOST.into(), port: 3081 }
     }
 }
 
@@ -40,44 +42,27 @@ impl Default for ServiceConfig {
 }
 
 /// 调试用配置。
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DevtoolsConfig {
     pub auto_open: bool,
 }
 
-impl Default for DevtoolsConfig {
-    fn default() -> Self {
-        Self { auto_open: false }
-    }
-}
-
 /// 主题模式：跟随系统 / 浅色 / 深色。
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
+    #[default]
     System,
     Light,
     Dark,
 }
 
-impl Default for ThemeMode {
-    fn default() -> Self {
-        Self::System
-    }
-}
-
 /// 主题配置。
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ThemeConfig {
     pub mode: ThemeMode,
-}
-
-impl Default for ThemeConfig {
-    fn default() -> Self {
-        Self { mode: ThemeMode::default() }
-    }
 }
 
 /// 顶层配置。首次运行在 %APPDATA%\com.deepseek.harness-desktop\config.json 生成。
@@ -96,7 +81,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            note: "DSH 桌面端配置文件。修改后重启应用生效。web.port 为 dsh web 服务端口（默认 3081，避开 Harness 默认 3080 可与现有会话并存）；web.host 为绑定主机；service.startTimeoutSecs 为服务启动等待上限（秒）；service.autoStart 为启动应用时自动拉起服务；devtools.autoOpen 为调试用自动打开开发者工具；theme.mode 为界面主题（system/light/dark）；autostart 为开机自启状态（注册表镜像）。".into(),
+            note: "DSH 桌面端配置文件。修改后重启应用生效。web.port 为 dsh web 服务端口（默认 3081，避开 Harness 默认 3080 可与现有会话并存）；web.host 固定为 127.0.0.1；service.startTimeoutSecs 为服务启动等待上限（秒）；service.autoStart 为启动应用时自动拉起服务；devtools.autoOpen 为调试用自动打开开发者工具；theme.mode 为界面主题（system/light/dark）；autostart 为开机自启状态（注册表镜像）。".into(),
             web: WebConfig::default(),
             service: ServiceConfig::default(),
             devtools: DevtoolsConfig::default(),
@@ -109,7 +94,7 @@ impl Default for AppConfig {
 impl AppConfig {
     /// 组装 Web 访问地址。
     pub fn web_url(&self) -> String {
-        format!("http://{}:{}", self.web.host, self.web.port)
+        format!("http://{}:{}", LOCAL_WEB_HOST, self.web.port)
     }
 
     /// 配置文件路径（无需 AppHandle，供窗口创建前读取）。
@@ -149,6 +134,11 @@ impl AppConfig {
             }
             None => def,
         };
+        // 个人 Windows 模式只绑定本机回环地址，避免把 dsh 服务暴露到局域网。
+        if cfg.web.host != LOCAL_WEB_HOST {
+            cfg.web.host = LOCAL_WEB_HOST.into();
+            let _ = cfg.save();
+        }
         // 开机自启状态以注册表为准（配置仅作镜像，供 UI 显示开关状态）
         cfg.autostart = reg_autostart_enabled();
         cfg
@@ -287,7 +277,10 @@ pub fn set_config(
     }
     if let Some(h) = web_host {
         let h = h.trim().trim_matches('"').to_string();
-        cfg.web.host = if h.is_empty() { "127.0.0.1".into() } else { h };
+        if !h.is_empty() && h != LOCAL_WEB_HOST {
+            return Err(format!("本机模式只支持绑定 {LOCAL_WEB_HOST}"));
+        }
+        cfg.web.host = LOCAL_WEB_HOST.into();
     }
     if let Some(a) = auto_start {
         cfg.service.auto_start = a;

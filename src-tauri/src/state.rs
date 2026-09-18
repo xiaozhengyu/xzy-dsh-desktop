@@ -19,6 +19,8 @@ pub struct AppState {
     pub env_info: Mutex<Option<EnvInfo>>,
     /// 配置（运行时可变：set_config 修改后同时持久化到 config.json）。
     pub config: Mutex<AppConfig>,
+    /// 串行化启动、停止和重启，避免自动启动与用户操作并发修改进程状态。
+    pub service_operation: Mutex<()>,
     /// 本应用派生的 dsh 进程启动时刻（用于前端展示运行时长）。
     pub started_at: Mutex<Option<SystemTime>>,
     /// 当前由本应用启动的 dsh 服务输出的认证 URL（仅驻留内存，不持久化）。

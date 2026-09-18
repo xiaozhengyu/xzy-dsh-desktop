@@ -8,6 +8,8 @@
 - 解析到 `dsh web: http://...?token=...` 后设置为该 URL；
 - 不写入配置文件，不跨进程持久化。
 
+`web.host` 对外契约固定为 `127.0.0.1`。历史配置会在加载时归一化；调用传入其他 host 时返回错误。
+
 ## `get_status`
 
 在现有响应字段基础上增加：
@@ -18,7 +20,7 @@
 }
 ```
 
-没有认证 URL 时返回 `null`。现有 `portInUse`、`owned` 和 `url` 字段保持兼容。
+没有认证 URL 时返回 `null`。现有 `portInUse`、`owned` 和 `url` 字段保持兼容；`url` 的 host 固定为 `127.0.0.1`。
 
 ## `start_service`
 
@@ -37,7 +39,7 @@
 
 ## dsh 启动参数
 
-桌面端通过现有 `dsh web` 别名启动，并追加：
+桌面端通过新版 dsh 的 `--profile web` 入口启动，并追加：
 
 ```text
 --no-open --port <port>
