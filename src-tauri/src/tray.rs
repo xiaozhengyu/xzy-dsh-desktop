@@ -65,7 +65,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.show();
                     let _ = win.unminimize();
-                    let _ = win.navigate(tauri::Url::parse("http://tauri.localhost/#/").expect("应用页 URL 解析失败"));
+                    let _ = win.navigate(tauri::Url::parse("http://tauri.localhost/?from=tray-control-panel#/").expect("应用页 URL 解析失败"));
                 }
             }
             "settings" => {
@@ -73,7 +73,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.show();
                     let _ = win.unminimize();
-                    let _ = win.navigate(tauri::Url::parse("http://tauri.localhost/#/settings").expect("应用页 URL 解析失败"));
+                    let _ = win.navigate(tauri::Url::parse("http://tauri.localhost/?from=tray-settings#/settings").expect("应用页 URL 解析失败"));
                 }
             }
             "fullscreen" => toggle_fullscreen_app(app),

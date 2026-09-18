@@ -34,6 +34,7 @@
 - `baseWebUrl` 保存配置生成的基础 URL；
 - `webUrl` 保存当前用于导航和展示的有效 URL；
 - `get_status.authenticatedUrl` 存在时覆盖 `webUrl`，否则使用 `baseWebUrl`。
+- 托盘返回控制面板或设置页使用 `from=tray-control-panel` / `from=tray-settings` 导航标记，当前页面生命周期内禁止自动跳转；用户手动进入 Harness 不受影响。
 
 新增 `navigate_to_harness` 命令。它先导航到 dsh 基础页，等待 Tauri 的 `on_page_load(Finished)` 回调，再导航到带 token 的 URL，使 token 换取 cookie 的请求从 dsh 自身 origin 发起，满足新版 dsh 的 `SameSite=Strict` 认证约束。
 

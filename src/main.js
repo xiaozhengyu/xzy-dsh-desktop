@@ -19,6 +19,9 @@
     config: null,
     runningAtLoad: null, // 首次刷新时服务是否已在运行；本应用托管的实例仍允许自动跳转
     navigated: false,
+    suppressAutoNavigation: ["tray-control-panel", "tray-settings"].includes(
+      new URLSearchParams(window.location.search).get("from")
+    ),
   };
   const state = DSH.state;
 
@@ -188,7 +191,7 @@
     if (state.runningAtLoad === null) state.runningAtLoad = state.portInUse;
     // 本应用托管的自动启动实例即使在首次轮询前已就绪，也要进入带 token 的 Harness URL；
     // 外部实例仍保持控制台页，避免无 token 时误导航到认证失败页。
-    if (state.portInUse && !state.navigated && (!state.runningAtLoad || state.owned)) {
+    if (!state.suppressAutoNavigation && state.portInUse && !state.navigated && (!state.runningAtLoad || state.owned)) {
       state.navigated = true;
       DSH.render();
       enterHarnessAfterReady();

@@ -18,3 +18,8 @@
 
 - 适配 `dsh 0.1.5-rc.2` 的新入口：使用 `dsh --profile web --no-open --port ...`，避免默认浏览器抢先消费认证 token。
 - release 构建不再默认打开 DevTools，保留 debug 或显式 feature 下的调试能力。
+
+## 2026-09-18（控制面板返回导航）
+
+- 修复从 Harness 通过托盘返回控制面板后，因 dsh 服务仍在运行而被自动导航回 Harness 的问题。
+- 为托盘控制面板/设置导航增加场景标记，保留应用首次启动后的自动进入 Harness 行为。
