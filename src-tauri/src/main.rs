@@ -127,7 +127,7 @@ fn main() {
             );
 
             // 按配置决定是否自动打开 DevTools（调试用）
-            #[cfg(any(debug_assertions, feature = "devtools"))]
+            #[cfg(debug_assertions)]
             if setup_cfg.devtools.auto_open {
                 win.open_devtools();
             }

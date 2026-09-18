@@ -12,6 +12,11 @@
   function build() {
     const host = $("settings-content");
     host.innerHTML = `
+      <div class="settings-head">
+        <button id="btn-back-console" class="head-link" title="返回控制台">← 控制台</button>
+        <span class="settings-title">功能设置</span>
+      </div>
+
       <div class="card">
         <div class="card-title">服务</div>
         <div class="settings-section">
@@ -40,7 +45,7 @@
           </div>
           <div class="setting-row">
             <div class="setting-label">
-              <span class="setting-name">启动时自动启动服务</span>
+              <span class="setting-name">启动应用时自动启动 dsh 服务</span>
               <span class="setting-desc">本应用启动后自动执行「启动服务」</span>
             </div>
             <label class="switch"><input id="set-autostart-service" type="checkbox" /><span class="track"></span></label>
@@ -61,19 +66,6 @@
               <label><input type="radio" name="theme-mode" value="dark" /> 深色</label>
               <label><input type="radio" name="theme-mode" value="system" /> 跟随系统</label>
             </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">调试</div>
-        <div class="settings-section">
-          <div class="setting-row">
-            <div class="setting-label">
-              <span class="setting-name">自动打开开发者工具</span>
-              <span class="setting-desc">启动时自动打开 DevTools（仅调试用）</span>
-            </div>
-            <label class="switch"><input id="set-devtools" type="checkbox" /><span class="track"></span></label>
           </div>
         </div>
       </div>
@@ -102,6 +94,11 @@
   }
 
   function bindEvents() {
+    $("btn-back-console").addEventListener("click", () => {
+      state.suppressAutoNavigation = true;
+      window.location.hash = "#/";
+    });
+
     $("btn-save-port").addEventListener("click", async () => {
       const port = parseInt($("set-port").value, 10);
       if (!port || port < 1 || port > 65535) {
@@ -149,14 +146,6 @@
       });
     });
 
-    $("set-devtools").addEventListener("change", async (e) => {
-      try {
-        await invoke("set_config", { autoOpenDevtools: e.target.checked });
-      } catch (err) {
-        alert("设置失败：" + (err?.message || String(err)));
-        e.target.checked = !e.target.checked;
-      }
-    });
   }
 
   DSH.renderSettings = async () => {
@@ -171,7 +160,6 @@
     $("set-autostart-service").checked = !!cfg.autoStart;
     const modeRadio = document.querySelector(`input[name="theme-mode"][value="${cfg.themeMode || "system"}"]`);
     if (modeRadio) modeRadio.checked = true;
-    $("set-devtools").checked = !!cfg.autoOpenDevtools;
 
     $("about-version").textContent = await DSH.getAppVersion();
     try {

@@ -5,9 +5,6 @@ description = "DSH 桌面端（Tauri 2 外壳，仅 Windows 11）"
 authors = ["DeepSeek"]
 edition = "2021"
 
-[features]
-devtools = []
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

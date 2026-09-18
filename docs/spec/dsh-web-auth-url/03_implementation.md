@@ -7,6 +7,7 @@
 - `src-tauri/src/service.rs`：管道读取 dsh 输出、解析认证 URL、返回有效 URL并清理生命周期状态。
 - `src/main.js`：同步认证 URL，导航和配置刷新使用正确的基础/有效 URL分层。
 - `src-tauri/capabilities/harness-remote.json`：允许本机配置端口的 Harness 页面使用全屏快捷键。
+- `index.html` / `src/views-console.js` / `src/views-settings.js` / `src/styles.css`：补齐设置返回入口、release 设置裁剪、认证信息脱敏和状态卡片刷新。
 - `README.md`：更新 dsh 启动与认证行为说明。
 - `docs/decisions/AI_CHANGELOG.md`：记录本次兼容性修复。
 
@@ -20,6 +21,7 @@
 6. 启动、停止和重启通过共享操作锁串行执行；启动超时或提前退出时终止子进程树并回滚状态。
 7. host 固定为 `127.0.0.1`，仅保留端口配置，避免个人工具意外暴露到局域网。
 8. 托盘导航到控制面板时附加场景标记，前端据此区分“用户返回控制台”和“应用首次启动”，避免自动导航状态机误触发。
+9. 控制台只展示基础 Web 地址，认证 token 仅在内存中用于导航；日志视图对 token 参数脱敏。
 
 ## 异常边界
 

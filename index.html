@@ -27,6 +27,7 @@
         <div class="head-actions">
           <button id="btn-enter-harness" class="btn btn-primary hidden">进入 Harness 界面</button>
           <button id="btn-toggle" class="btn-toggle start" title="启动 / 停止 dsh web 服务">启动服务</button>
+          <button id="btn-settings" class="head-link" title="功能设置">设置</button>
         </div>
       </header>
 
@@ -35,7 +36,7 @@
         <div class="card service-card">
           <div class="card-title">服务</div>
           <div class="kv-grid">
-            <div class="kv"><span class="k">地址</span><span class="v"><code id="svc-url">—</code></span></div>
+            <div class="kv"><span class="k">地址</span><span class="v service-url"><code id="svc-url">—</code><span id="svc-auth" class="svc-auth"></span></span></div>
             <div class="kv"><span class="k">进程 PID</span><span id="svc-pid" class="v">—</span></div>
             <div class="kv"><span class="k">运行时长</span><span id="svc-uptime" class="v">—</span></div>
           </div>

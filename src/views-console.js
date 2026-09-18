@@ -8,6 +8,7 @@
 
   const els = {
     svcUrl: $("svc-url"),
+    svcAuth: $("svc-auth"),
     svcPid: $("svc-pid"),
     svcUptime: $("svc-uptime"),
     envNode: $("env-node"),
@@ -45,7 +46,10 @@
 
   function renderServiceCard() {
     const info = DSH.serviceInfo || {};
-    els.svcUrl.textContent = state.webUrl || "—";
+    const hasAuthUrl = !!state.webUrl && state.webUrl !== state.baseWebUrl;
+    els.svcUrl.textContent = state.baseWebUrl || "—";
+    els.svcUrl.title = hasAuthUrl ? "认证 URL 已捕获，实际导航由应用内部处理" : "";
+    els.svcAuth.textContent = hasAuthUrl ? "认证已就绪" : "";
     els.svcPid.textContent = info.pid ? String(info.pid) : "—";
     els.svcUptime.textContent = state.owned && info.startedAtMs
       ? fmtUptime(Date.now() - info.startedAtMs)
@@ -56,6 +60,7 @@
     if (!DSH.inTauri) return;
     try {
       DSH.serviceInfo = await invoke("get_service_info");
+      if (typeof DSH.renderConsole === "function" && isConsoleVisible()) DSH.renderConsole();
     } catch (e) {
       console.error("get_service_info 失败", e);
     }
@@ -112,6 +117,10 @@
   }
 
   // ---------------- 日志查看器 ----------------
+  function redactToken(text) {
+    return text.replace(/([?&]token=)[^\s&]+/gi, "$1******");
+  }
+
   function classify(line) {
     if (/error|fail|panic|exception|异常|失败|traceback/i.test(line)) return "error";
     if (/boot|ready|listen|start|启动|就绪|web\b/i.test(line)) return "info";
@@ -124,7 +133,7 @@
   }
 
   function pushLine(text, cls) {
-    rawLines.push({ text, cls });
+    rawLines.push({ text: redactToken(text), cls });
     if (rawLines.length > MAX_LINES) rawLines.splice(0, rawLines.length - MAX_LINES);
   }
 
@@ -155,12 +164,13 @@
     const atBottom = isAtBottom();
     const frag = document.createDocumentFragment();
     for (const text of lines) {
+      const safeText = redactToken(text);
       const cls = classify(text);
-      pushLine(text, cls);
-      if (!matchesFilter(text)) continue;
+      pushLine(safeText, cls);
+      if (!matchesFilter(safeText)) continue;
       const div = document.createElement("div");
       div.className = "log-line" + (cls ? " " + cls : "");
-      div.textContent = text;
+      div.textContent = safeText;
       frag.appendChild(div);
     }
     els.logView.appendChild(frag);

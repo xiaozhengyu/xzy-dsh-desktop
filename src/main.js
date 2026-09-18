@@ -37,6 +37,7 @@
     statusDot: $("status-dot"),
     statusText: $("status-text"),
     btnToggle: $("btn-toggle"),
+    btnSettings: $("btn-settings"),
   };
   const els = DSH.els;
 
@@ -62,11 +63,11 @@
   }
 
   function statusDetail() {
-    const { portInUse, owned, busy, busyAction, webPort, webUrl } = state;
+    const { portInUse, owned, busy, busyAction, webPort, baseWebUrl } = state;
     if (busy) return busyAction === "停止" ? "正在终止 dsh 进程树…" : `等待 ${webPort} 端口就绪…`;
-    if (portInUse && owned) return `dsh web 服务由本应用托管（${webUrl}）`;
-    if (portInUse) return `检测到 ${webUrl} 已被占用，未重复启动，已直接加载现有实例`;
-    return `点击「启动服务」运行 dsh web --port ${webPort}（${webUrl}）`;
+    if (portInUse && owned) return `dsh web 服务由本应用托管（${baseWebUrl}）`;
+    if (portInUse) return `检测到 ${baseWebUrl} 已被占用，未重复启动，已直接加载现有实例`;
+    return `点击「启动服务」运行 dsh web --port ${webPort}（${baseWebUrl}）`;
   }
 
   // ---------------- 服务状态机（集中判定，渲染/操作统一入口） ----------------
@@ -191,7 +192,8 @@
     if (state.runningAtLoad === null) state.runningAtLoad = state.portInUse;
     // 本应用托管的自动启动实例即使在首次轮询前已就绪，也要进入带 token 的 Harness URL；
     // 外部实例仍保持控制台页，避免无 token 时误导航到认证失败页。
-    if (!state.suppressAutoNavigation && state.portInUse && !state.navigated && (!state.runningAtLoad || state.owned)) {
+    const isSettingsView = window.location.hash.startsWith("#/settings");
+    if (!state.suppressAutoNavigation && !isSettingsView && state.portInUse && !state.navigated && (!state.runningAtLoad || state.owned)) {
       state.navigated = true;
       DSH.render();
       enterHarnessAfterReady();
@@ -355,6 +357,10 @@
 
   // ---------------- 初始化 ----------------
   els.btnToggle.addEventListener("click", toggleService);
+  els.btnSettings?.addEventListener("click", () => {
+    state.suppressAutoNavigation = true;
+    window.location.hash = "#/settings";
+  });
   window.addEventListener("hashchange", route);
 
   if (!DSH.inTauri) {

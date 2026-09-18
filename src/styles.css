@@ -141,6 +141,12 @@ body.light { background: #eef0f3; }
 }
 .head-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
 
+.settings-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 0 2px;
+}
+.settings-title { flex: 1; font-size: 15px; font-weight: 600; }
+
 /* ---------------- 内容区 ---------------- */
 
 .content {
@@ -195,6 +201,8 @@ body.light { background: #eef0f3; }
   padding: 2px 7px;
   user-select: text;
 }
+.service-url { display: flex; align-items: center; gap: 8px; }
+.svc-auth { flex: none; color: var(--green); font-size: 11px; }
 
 /* ---------------- 按钮 ---------------- */
 
