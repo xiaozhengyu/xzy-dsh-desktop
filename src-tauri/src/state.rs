@@ -21,4 +21,8 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     /// 本应用派生的 dsh 进程启动时刻（用于前端展示运行时长）。
     pub started_at: Mutex<Option<SystemTime>>,
+    /// 当前由本应用启动的 dsh 服务输出的认证 URL（仅驻留内存，不持久化）。
+    pub authenticated_url: Mutex<Option<String>>,
+    /// 等待 dsh 基础页完成一次同站点加载后再打开的认证 URL。
+    pub pending_harness_navigation: Mutex<Option<String>>,
 }

@@ -2,7 +2,8 @@
 //! 核心职责：托管 dsh web 进程、进程树清理、端口归属判定。
 
 use std::{
-    fs::{self, File},
+    fs,
+    io::{BufRead, BufReader, Read},
     net::{TcpStream, ToSocketAddrs},
     process::{Command, Stdio},
     time::{Duration, Instant, SystemTime},
@@ -26,6 +27,7 @@ pub struct StatusInfo {
     pub port_in_use: bool,
     pub owned: bool,
     pub url: String,
+    pub authenticated_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -172,6 +174,60 @@ pub fn is_dsh_process(cmdline: &str) -> bool {
     has_dsh_marker && lower.contains(" web ")
 }
 
+/// 从 dsh 的启动输出中提取当前服务的认证 URL。
+///
+/// 新版 dsh 会输出 `dsh web: http://127.0.0.1:<port>/?token=...`；旧版
+/// 没有这行时由调用方回退到配置生成的基础 URL。
+fn extract_authenticated_web_url(line: &str, port: u16) -> Option<String> {
+    let tail = line.split_once("dsh web:")?.1.trim();
+    let candidate = tail.split_whitespace().next()?;
+    let port_marker = format!(":{port}/?token=");
+    if candidate.starts_with("http://") && candidate.contains(&port_marker) {
+        return Some(candidate.to_string());
+    }
+    None
+}
+
+/// 读取 dsh 子进程输出：原样写入日志，并捕获认证 URL。
+fn spawn_output_reader<R>(reader: R, app: AppHandle, port: u16)
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines() {
+            let Ok(line) = line else { break };
+            if let Some(url) = extract_authenticated_web_url(&line, port) {
+                let state = app.state::<AppState>();
+                *state.authenticated_url.lock().unwrap() = Some(url);
+            }
+            append_log_line(&app, &line);
+        }
+    });
+}
+
+/// 返回当前可用于导航的 URL；没有认证 URL 时回退到基础 URL。
+fn effective_web_url(state: &AppState, fallback: &str) -> String {
+    state
+        .authenticated_url
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// 健康检查通过后给 stdout reader 一小段时间完成认证 URL 捕获。
+/// 超时只代表旧版 dsh 没有输出 token，不阻断服务启动。
+fn wait_for_effective_web_url(state: &AppState, fallback: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let url = effective_web_url(state, fallback);
+        if url != fallback || Instant::now() >= deadline {
+            return url;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// 用 Windows 原生 taskkill 强杀进程树（含子进程），防止端口残留。
 pub fn kill_tree(pid: u32) {
     let mut cmd = Command::new("taskkill");
@@ -187,6 +243,7 @@ pub fn kill_tree(pid: u32) {
 pub fn get_status(state: State<'_, AppState>) -> StatusInfo {
     let cfg = state.config.lock().unwrap().clone();
     let mut owned = false;
+    let mut exited = false;
     {
         let mut guard = state.child.lock().unwrap();
         if let Some(child) = guard.as_mut() {
@@ -194,15 +251,21 @@ pub fn get_status(state: State<'_, AppState>) -> StatusInfo {
                 Ok(Some(_)) => {
                     // 进程已退出，清理句柄
                     *guard = None;
+                    exited = true;
                 }
                 _ => owned = true,
             }
         }
     }
+    if exited {
+        *state.authenticated_url.lock().unwrap() = None;
+        *state.pending_harness_navigation.lock().unwrap() = None;
+    }
     StatusInfo {
         port_in_use: probe_port(&cfg),
         owned,
         url: cfg.web_url(),
+        authenticated_url: state.authenticated_url.lock().unwrap().clone(),
     }
 }
 
@@ -268,8 +331,13 @@ pub fn start_service_inner(
 
     // 2) 端口占用检测：已被占用 → 视为已有实例，不重复启动
     if probe_port(cfg) {
-        return Ok(StartOutcome::AlreadyRunning { url: web_url });
+        return Ok(StartOutcome::AlreadyRunning {
+            url: effective_web_url(state, &web_url),
+        });
     }
+
+    *state.authenticated_url.lock().unwrap() = None;
+    *state.pending_harness_navigation.lock().unwrap() = None;
 
     // 清理可能残留的旧进程
     if let Some(mut old) = state.child.lock().unwrap().take() {
@@ -290,12 +358,14 @@ pub fn start_service_inner(
             c
         }
     };
-    cmd.arg("web").arg("--port").arg(port.to_string());
+    cmd.arg("web")
+        .arg("--no-open")
+        .arg("--port")
+        .arg(port.to_string());
     // 绑定 host 闭环：配置了非默认 host 时显式传给 dsh web
     if cfg.web.host != "127.0.0.1" && !cfg.web.host.is_empty() {
         cmd.arg("--host").arg(&cfg.web.host);
     }
-
     // 不弹出控制台窗口：GUI 子系统应用 spawn 控制台子系统进程（node/cmd）时，
     // Windows 默认会新建一个终端窗口；CREATE_NO_WINDOW 禁止之，输出仍写入日志文件。
     #[cfg(windows)]
@@ -308,29 +378,29 @@ pub fn start_service_inner(
         .map_err(|e| StartError::SpawnFailed(format!("无法获取日志目录: {e}")))?;
     let _ = fs::create_dir_all(&log_dir);
     let log_file = log_dir.join("dsh-web.log");
-    let stdout_file = File::options()
-        .create(true)
-        .append(true)
-        .open(&log_file)
-        .map_err(|e| StartError::SpawnFailed(format!("无法打开日志文件: {e}")))?;
-    let stderr_file = stdout_file
-        .try_clone()
-        .map_err(|e| StartError::SpawnFailed(format!("无法克隆日志句柄: {e}")))?;
     cmd.stdin(Stdio::null())
-        .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file));
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .map_err(|e| StartError::SpawnFailed(format!("启动 dsh 失败: {e}")))?;
+
+    if let Some(stdout) = child.stdout.take() {
+        spawn_output_reader(stdout, app.clone(), port);
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_output_reader(stderr, app.clone(), port);
+    }
     *state.child.lock().unwrap() = Some(child);
 
     // 4) 等待服务就绪：TCP 可连 且 HTTP 返回响应（比单纯端口探测更接近「可用」）
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if probe_port(cfg) && cfg_http_ready(cfg) {
+            let url = wait_for_effective_web_url(state, &web_url);
             *state.started_at.lock().unwrap() = Some(SystemTime::now());
-            return Ok(StartOutcome::Started { url: web_url });
+            return Ok(StartOutcome::Started { url });
         }
         {
             let mut guard = state.child.lock().unwrap();
@@ -363,6 +433,35 @@ pub fn start_service(
     start_service_inner(&app, &state, &cfg)
 }
 
+/// 通过“基础页 → 认证 URL”的两步导航建立 dsh 的 SameSite=Strict cookie。
+#[tauri::command]
+pub fn navigate_to_harness(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let cfg = state.config.lock().unwrap().clone();
+    if !probe_port(&cfg) {
+        return Err("dsh web 服务尚未就绪".into());
+    }
+    let target = effective_web_url(&state, &cfg.web_url());
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "主窗口不可用".to_string())?;
+    let target_url = tauri::Url::parse(&target).map_err(|e| format!("认证 URL 无效: {e}"))?;
+    if target != cfg.web_url() {
+        *state.pending_harness_navigation.lock().unwrap() = Some(target);
+        let base = tauri::Url::parse(&cfg.web_url()).map_err(|e| format!("基础 URL 无效: {e}"))?;
+        window
+            .navigate(base)
+            .map_err(|e| format!("打开 dsh 基础页失败: {e}"))?;
+    } else {
+        window
+            .navigate(target_url)
+            .map_err(|e| format!("打开 Harness 失败: {e}"))?;
+    }
+    Ok(())
+}
+
 #[tauri::command(async)]
 pub fn stop_service(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let child = state.child.lock().unwrap().take();
@@ -371,6 +470,8 @@ pub fn stop_service(app: AppHandle, state: State<'_, AppState>) -> Result<(), St
         let _ = c.wait();
     }
     *state.started_at.lock().unwrap() = None;
+    *state.authenticated_url.lock().unwrap() = None;
+    *state.pending_harness_navigation.lock().unwrap() = None;
     append_log_line(&app, "[dsh-desktop] --- normal shutdown ---");
     Ok(())
 }
@@ -405,5 +506,31 @@ pub fn restart_service(
         let _ = c.wait();
     }
     *state.started_at.lock().unwrap() = None;
+    *state.authenticated_url.lock().unwrap() = None;
+    *state.pending_harness_navigation.lock().unwrap() = None;
     start_service_inner(&app, &state, &cfg).map_err(|e| format!("重启失败: {e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_authenticated_web_url;
+
+    #[test]
+    fn extracts_token_url_from_dsh_output() {
+        let line = "dsh web: http://127.0.0.1:3081/?token=abc_DEF-123";
+        assert_eq!(
+            extract_authenticated_web_url(line, 3081).as_deref(),
+            Some("http://127.0.0.1:3081/?token=abc_DEF-123")
+        );
+    }
+
+    #[test]
+    fn ignores_base_url_and_other_ports() {
+        assert!(extract_authenticated_web_url("dsh web: http://127.0.0.1:3081/", 3081).is_none());
+        assert!(
+            extract_authenticated_web_url("dsh web: http://127.0.0.1:3080/?token=abc", 3081)
+                .is_none()
+        );
+    }
+
 }

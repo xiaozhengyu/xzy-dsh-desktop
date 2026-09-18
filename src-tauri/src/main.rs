@@ -3,8 +3,8 @@
 // 设计要点：
 //  - 不内嵌任何 Node.js 运行时：启动时直接调用系统 PATH 中的全局 node 与 dsh。
 //  - 通过解析 npm 生成的 dsh.cmd shim 得到真实 JS 入口，用 Command::new(node) 直接执行，
-//    从而满足“Rust 后端通过 node 执行 dsh web --port 3081”的要求；解析失败时回退到
-//    `cmd /C dsh web --port 3081`。
+//    从而满足“Rust 后端通过 node 执行 dsh web --no-open --port 3081”的要求；解析失败时
+//    回退到 `cmd /C dsh web --no-open --port 3081`。
 //  - 进程树清理使用 Windows 原生 taskkill /T /F（比 sysinfo 更轻、更可靠）。
 //  - 关闭主窗口 → 最小化到托盘；托盘“退出应用” → 先杀掉派生进程再退出。
 //
@@ -54,6 +54,8 @@ fn main() {
             env_info: Mutex::new(None),
             config: Mutex::new(cfg.clone()),
             started_at: Mutex::new(None),
+            authenticated_url: Mutex::new(None),
+            pending_harness_navigation: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             crate::env::get_env_info,
@@ -64,6 +66,7 @@ fn main() {
             crate::logging::tail_log,
             crate::logging::clear_log,
             crate::service::start_service,
+            crate::service::navigate_to_harness,
             crate::service::stop_service,
             crate::service::restart_service,
             crate::diagnostics::run_diagnostics,
@@ -92,6 +95,28 @@ fn main() {
             .additional_browser_args("--proxy-bypass-list=<-loopback>")
             .devtools(true)
             .initialization_script(SHORTCUT_SCRIPT)
+            .on_page_load(|window, payload| {
+                if payload.event() != tauri::webview::PageLoadEvent::Finished {
+                    return;
+                }
+                let app = window.app_handle();
+                let state = app.state::<AppState>();
+                let cfg = state.config.lock().unwrap().clone();
+                let url = payload.url();
+                let is_dsh_base = url.scheme() == "http"
+                    && url.host_str() == Some("127.0.0.1")
+                    && url.port() == Some(cfg.web.port)
+                    && url.path() == "/";
+                if !is_dsh_base {
+                    return;
+                }
+                let Some(auth_url) = state.pending_harness_navigation.lock().unwrap().take() else {
+                    return;
+                };
+                if let Ok(target) = tauri::Url::parse(&auth_url) {
+                    let _ = window.navigate(target);
+                }
+            })
             .build()?;
 
             #[cfg(target_os = "windows")]

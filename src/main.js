@@ -14,9 +14,10 @@
     busy: false,
     busyAction: "启动",
     webPort: 3081,
+    baseWebUrl: "http://127.0.0.1:3081",
     webUrl: "http://127.0.0.1:3081",
     config: null,
-    runningAtLoad: null, // 首次刷新时服务是否已在运行（托盘返回时为 true，不自动跳转）
+    runningAtLoad: null, // 首次刷新时服务是否已在运行；本应用托管的实例仍允许自动跳转
     navigated: false,
   };
   const state = DSH.state;
@@ -114,8 +115,21 @@
   };
 
   // ---------------- 导航 ----------------
-  function navigateToHarness() {
-    window.location.href = state.webUrl;
+  async function navigateToHarness() {
+    // dsh 的认证 cookie 使用 SameSite=Strict：Rust 侧先打开基础页，
+    // 等它成为当前 origin 后再打开 token URL，避免跨站重定向丢 cookie。
+    if (DSH.inTauri) {
+      try {
+        await invoke("navigate_to_harness");
+      } catch (e) {
+        console.error("进入 Harness 失败", e);
+        DSH.showBanner("进入 Harness 失败：" + (e?.message || String(e)), undefined, {
+          retry: DSH.navigateToHarness,
+        });
+      }
+      return;
+    }
+    if (state.portInUse) window.location.replace(state.webUrl);
   }
   DSH.navigateToHarness = navigateToHarness;
 
@@ -166,14 +180,17 @@
       const s = await invoke("get_status");
       state.portInUse = s.portInUse;
       state.owned = s.owned;
+      state.webUrl = s.authenticatedUrl || state.baseWebUrl;
     } catch (e) {
       console.error("get_status 失败", e);
     }
     // 首次刷新记录“服务是否已在运行”：托盘返回时已在运行则不自动跳转
     if (state.runningAtLoad === null) state.runningAtLoad = state.portInUse;
-    // 新启动的服务就绪后自动整窗进入 Harness（带就绪缓冲，避免后端未就绪的 boot 竞态）
-    if (state.portInUse && !state.runningAtLoad && !state.navigated) {
+    // 本应用托管的自动启动实例即使在首次轮询前已就绪，也要进入带 token 的 Harness URL；
+    // 外部实例仍保持控制台页，避免无 token 时误导航到认证失败页。
+    if (state.portInUse && !state.navigated && (!state.runningAtLoad || state.owned)) {
       state.navigated = true;
+      DSH.render();
       enterHarnessAfterReady();
       return;
     }
@@ -184,7 +201,7 @@
   function startPolling() {
     setInterval(() => {
       if (!document.hidden) refreshStatus();
-    }, 3000);
+    }, 1000);
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) refreshStatus();
     });
@@ -221,6 +238,7 @@
     DSH.render();
     try {
       const res = await invoke("start_service");
+      if (res?.url) state.webUrl = res.url;
       if (res && res.status === "alreadyRunning") {
         await refreshStatus();
       } else {
@@ -273,7 +291,8 @@
       const cfg = await invoke("get_config");
       if (cfg && cfg.webPort) {
         state.webPort = cfg.webPort;
-        state.webUrl = cfg.webUrl;
+        state.baseWebUrl = cfg.webUrl;
+        if (!state.portInUse) state.webUrl = cfg.webUrl;
       }
       state.config = cfg;
     } catch (e) {
